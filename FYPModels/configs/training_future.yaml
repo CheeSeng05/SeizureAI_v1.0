@@ -1,0 +1,20 @@
+# FUTURE HUKM capability. Keep disabled until paired vEEG is verified.
+training:
+  enabled: false
+
+video_encoder:
+  pretrained: true
+  freeze: true
+  learning_rate: 0.00001
+
+eeg_encoder:
+  pretrained: true
+  freeze: true
+  learning_rate: 0.00001
+
+fusion:
+  trainable: true
+  learning_rate: 0.001
+  projection_dim: 128
+  hidden_dim: 128
+  dropout: 0.3

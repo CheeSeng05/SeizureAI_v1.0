@@ -1,0 +1,28 @@
+environment: aws
+
+storage:
+  backend: s3
+  s3:
+    bucket: null  # Prefer S3_BUCKET from the environment.
+    endpoint_url: null  # Real AWS uses its endpoint; local emulators override this.
+    region: ap-southeast-1
+    prefix: null
+    profile: null  # Prefer an IAM role in AWS or AWS_PROFILE locally.
+    server_side_encryption: AES256
+    kms_key_id: null
+
+database:
+  url: null  # Set DATABASE_URL to the private RDS PostgreSQL endpoint.
+
+model:
+  project_path: ../../FYPModels
+  python: null
+  work_root: ../work
+
+body_pose:
+  project_path: ../../BodyPose/body_pose_fyp  # Legacy annotation adapter only.
+  python: null
+  work_root: ../work
+
+logging:
+  level: INFO

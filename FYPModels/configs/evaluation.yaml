@@ -1,0 +1,19 @@
+window:
+  duration_sec: 5.0
+  stride_sec: 5.0
+
+event_generation:
+  probability_threshold: 0.5
+  minimum_event_duration_sec: 5.0
+  gap_tolerance_sec: 0.0
+  refractory_period_sec: 0.0
+
+onset_reference: clinical_onset
+offset_annotations_available: false
+
+confidence_intervals:
+  enabled: true
+  confidence: 0.95
+  method: patient-level percentile bootstrap
+  resamples: 1000
+  random_seed: 42

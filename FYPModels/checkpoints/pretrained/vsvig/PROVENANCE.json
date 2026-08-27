@@ -1,0 +1,13 @@
+{
+  "model_name": "VSViG-base",
+  "source": "Original local VSViG-main/VSViG-base.pth",
+  "original_path": "VSViG-main/VSViG-base.pth",
+  "size_bytes": 28067637,
+  "sha256": "0a95e3e0093730dc535e21a84f04943c73549a2b6a19a85e33aebc7c64f965a9",
+  "dynamic_partition_path": "VSViG-main/dy_point_order.pt",
+  "dynamic_partition_sha256": "9aa778ca1221f47b6afe0242787becfdfaae3f2424b54dd15a48c585ef0a0ced",
+  "pose_checkpoint_path": "VSViG-main/pose.pth",
+  "pose_checkpoint_sha256": "7c61f38c17d4b54d7f429717544be1de0905f901aa6f7913f7868ae5c5b83827",
+  "immutable_original": true,
+  "note": "Files remain in the original source directory and are referenced, never overwritten."
+}

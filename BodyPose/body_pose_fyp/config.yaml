@@ -1,0 +1,82 @@
+paths:
+  videos: videos
+  raw_annotations: annotations/annotations.csv
+  canonical_annotations: annotations/canonical_annotations.csv
+  keypoints: keypoints
+  features: features
+  dataset: datasets/windows.npz
+  window_manifest: datasets/window_manifest.csv
+  checkpoint: checkpoints/best_lstm.pt
+  scaler: checkpoints/standard_scaler.joblib
+  results: results
+  body_embeddings_csv: results/body_embeddings.csv
+  body_embeddings_npz: results/body_embeddings.npz
+
+annotation_adapter:
+  type: generic_tabular
+  dataset: local_video_prototype
+  source: annotations/annotations.csv
+  column_map:
+    media_id: video_id
+    patient_id: patient_id
+    start_sec: start_sec
+    end_sec: end_sec
+    label: label
+  label_map:
+    normal: normal
+    pre_ictal: pre_ictal
+    ictal: ictal
+  time_unit: seconds
+
+labels:
+  active:
+    - normal
+    - pre_ictal
+    - ictal
+
+pose:
+  model_complexity: 1
+  min_detection_confidence: 0.40
+  min_tracking_confidence: 0.40
+  visibility_threshold: 0.30
+  smooth_landmarks: true
+  frame_step: 1
+  save_overlay_video: false
+
+features:
+  interpolate_limit: 15
+  smoothing_window: 5
+  visibility_threshold: 0.30
+  include_coordinates: true
+  include_visibility: true
+  include_velocity: true
+  include_acceleration: true
+  include_speed: true
+  include_trajectory: true
+  trajectory_window_frames: 15
+  include_joint_angles: true
+  normalize_body: true
+
+dataset:
+  window_seconds: 3.0
+  stride_seconds: 1.0
+  target_fps: 10.0
+  minimum_label_coverage: 0.60
+  split_seed: 42
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  test_fraction: 0.15
+
+training:
+  batch_size: 32
+  hidden_size: 128
+  num_layers: 2
+  bidirectional: true
+  dropout: 0.30
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  max_epochs: 80
+  patience: 12
+  gradient_clip: 1.0
+  num_workers: 0
+  seed: 42

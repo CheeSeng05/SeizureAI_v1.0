@@ -1,0 +1,16 @@
+.env
+.venv/
+.test-venv/
+.verification/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+configs/local.yaml
+configs/aws.yaml
+data/
+work/
+test-output/
+*.sqlite
+*.sqlite3

@@ -1,0 +1,75 @@
+training:
+  enabled: false
+
+testing:
+  mode: unimodal
+  threshold: 0.5
+  output_directory: results
+
+data:
+  video: test_video/Sz2PG.mp4
+  video_labels: test_video/Label.xlsx
+  eeg_csv: Epileptic Seizure Recognition.csv
+  video_provenance:
+    expected_sha256: 819634aac6b8a6fe5779b2da786b6b5697524eee761acccd270c4968af135c67
+    upstream_path: dataset/pat01/Sz2PG.mp4
+    patient_id: Pat01
+    seizure_id: Sz2
+    seizure_type: PG
+    source: https://huggingface.co/datasets/xuyankun/WU-SAHZU-EMU-Video
+
+video_encoder:
+  pretrained: true
+  freeze: true
+  source: VSViG-main/VSViG.py
+  checkpoint: VSViG-main/VSViG-base.pth
+  dynamic_partition: VSViG-main/dy_point_order.pt
+  pose_source: third_party/lightweight_openpose
+  pose_checkpoint: VSViG-main/pose.pth
+  pose_input_height: 256
+  clip_frames: 30
+  clip_stride_frames: 30
+  inference_batch_size: 8
+  pose_batch_size: 30
+  fps: null
+
+eeg_encoder:
+  pretrained: true
+  freeze: true
+  checkpoint: checkpoints/pretrained/eeg/seizure_detector_model.keras
+  sampling_rate: 256
+  channels: 18
+  window_duration_sec: 4
+
+eeg_labels:
+  mapping:
+    1: ictal
+    2: non_ictal_epileptogenic_zone_interictal
+    3: non_ictal_healthy_brain_area_interictal
+    4: non_ictal_healthy_eyes_closed
+    5: non_ictal_healthy_eyes_open
+  positive_value: 1
+
+simulated_multimodal:
+  pairing_policy: first_n
+  calculate_artificial_metrics: false
+  reference_labels: video
+
+fusion:
+  trainable: false
+  late_video_weight: 0.5
+  late_eeg_weight: 0.5
+  weights_validated: false
+  projection_dim: 128
+  hidden_dim: 128
+  dropout: 0.3
+
+synchronization:
+  require_same_patient: true
+  require_same_recording: true
+  require_both_modalities: true
+  duration_tolerance_sec: 0.05
+  video_offset_sec: 0.0
+  eeg_offset_sec: 0.0
+  video_drift_ppm: 0.0
+  eeg_drift_ppm: 0.0

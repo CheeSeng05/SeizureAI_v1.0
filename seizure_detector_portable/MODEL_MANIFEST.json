@@ -1,0 +1,44 @@
+{
+  "model_file": "seizure_detector_model.keras",
+  "format": "Keras v3 native archive",
+  "saved_with_keras": "3.15.1",
+  "model_name": "SeizureDetector",
+  "input_shape": [
+    null,
+    1024,
+    18
+  ],
+  "output_shape": [
+    null,
+    1
+  ],
+  "output_activation": "sigmoid",
+  "architecture": [
+    "Conv1D(32,k=3)",
+    "Conv1D(64,k=5)",
+    "Conv1D(128,k=7)",
+    "Bidirectional LSTM(64)",
+    "Bidirectional LSTM(32)",
+    "MultiHeadAttention(num_heads=4,key_dim=32)",
+    "GlobalAveragePooling + GlobalMaxPooling",
+    "Dense(64)",
+    "Dense(32)",
+    "Dense(1,sigmoid)"
+  ],
+  "stored_parameter_count": 254433,
+  "inference_preprocessing": {
+    "sampling_rate_hz": 256,
+    "channels": 18,
+    "channel_selection": "first 18 EDF channels (training behavior)",
+    "bandpass_hz": [
+      0.5,
+      100
+    ],
+    "notch_hz": 60,
+    "normalization": "per-channel z-score over recording",
+    "clip_sigma": 5,
+    "window_seconds": 4,
+    "overlap": 0.5,
+    "stride_seconds": 2
+  }
+}

@@ -1,0 +1,21 @@
+environment: local
+
+storage:
+  backend: local
+  local_root: ../data
+
+database:
+  url: postgresql+psycopg://fyp_user:change_me@localhost:5432/fyp_data
+
+model:
+  project_path: ../../FYPModels
+  python: null
+  work_root: ../work
+
+body_pose:
+  project_path: ../../BodyPose/body_pose_fyp
+  python: null
+  work_root: ../work
+
+logging:
+  level: INFO

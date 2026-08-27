@@ -1,0 +1,48 @@
+{
+    "model_name": "SeizureDetector_CNN_LSTM_Attention",
+    "version": "1.0",
+    "created_date": "2026-08-25 00:19",
+    "author": "Your Name",
+    "input_shape": {
+        "time_steps": 1024,
+        "channels": 18,
+        "window_seconds": 4,
+        "sampling_rate": 256
+    },
+    "preprocessing": {
+        "bandpass_low_hz": 0.5,
+        "bandpass_high_hz": 100,
+        "notch_filter_hz": 60,
+        "normalization": "z-score"
+    },
+    "training": {
+        "patients_used": [
+            "chb01",
+            "chb02",
+            "chb03",
+            "chb05",
+            "chb06"
+        ],
+        "total_samples": 2580,
+        "train_samples": 1806,
+        "val_samples": 387,
+        "test_samples": 387,
+        "epochs_trained": 24,
+        "batch_size": 32
+    },
+    "performance": {
+        "test_accuracy": 0.9689922480620154,
+        "test_precision": 0.968,
+        "test_recall": 0.937984496124031,
+        "test_specificity": 0.9844961240310077,
+        "test_f1": 0.952755905511811,
+        "test_auc": 0.9967850489754222,
+        "cross_dataset_accuracy": 0.9404347826086956,
+        "cross_dataset_auc": 0.9357047258979205
+    },
+    "classes": [
+        "Normal",
+        "Seizure"
+    ],
+    "threshold": 0.5
+}

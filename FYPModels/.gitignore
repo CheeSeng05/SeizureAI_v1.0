@@ -1,0 +1,24 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Python environments are created by each person on their own computer.
+.venv/
+.venv*/
+
+# Local-only sample/raw data. Keep these files on your computer, not in Git.
+test_video/
+datasets/
+results/
+*.mp4
+*.mov
+*.avi
+*.mkv
+Epileptic Seizure Recognition.csv
+Label.xlsx
+
+# New private training outputs/checkpoints should not be committed accidentally.
+checkpoints/fyp/**/*.pth
+checkpoints/fyp/**/*.pt
+checkpoints/fyp/**/*.h5

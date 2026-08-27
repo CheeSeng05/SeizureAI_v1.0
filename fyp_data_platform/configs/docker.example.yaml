@@ -1,0 +1,28 @@
+environment: docker
+
+storage:
+  backend: s3
+  s3:
+    bucket: fyp-local
+    endpoint_url: http://localhost:9000
+    region: ap-southeast-1
+    prefix: fyp-dev
+    profile: null
+    server_side_encryption: null  # Local MinIO has no external KMS; AWS uses AES256.
+    kms_key_id: null
+
+database:
+  url: postgresql+psycopg://fyp_user:change_me@localhost:5432/fyp_data
+
+model:
+  project_path: ../../FYPModels
+  python: null
+  work_root: ../work
+
+body_pose:
+  project_path: ../../BodyPose/body_pose_fyp  # Legacy annotation adapter only.
+  python: null
+  work_root: ../work
+
+logging:
+  level: INFO
