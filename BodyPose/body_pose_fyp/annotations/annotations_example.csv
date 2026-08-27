@@ -1,7 +1,0 @@
-video_id,patient_id,start_sec,end_sec,label
-patient001,patient001,0,120,normal
-patient001,patient001,120,150,pre_ictal
-patient001,patient001,150,190,ictal
-patient002,patient002,0,95,normal
-patient002,patient002,95,125,pre_ictal
-patient002,patient002,125,165,ictal
