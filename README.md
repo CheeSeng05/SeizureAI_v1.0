@@ -1,178 +1,175 @@
 # SeizureAI v1.0
 
-SeizureAI v1.0 is a local research prototype for video-based seizure prediction.
-It lets you upload MP4 videos in a browser, stores the videos in MinIO, stores
-metadata in PostgreSQL, runs the seizure model, then shows whether seizure-like
-segments were detected with timestamps and probabilities.
+SeizureAI is a local research platform for running video-based seizure inference.
+It provides one browser dashboard for uploading videos, cataloguing recordings,
+starting the authoritative model pipeline, and reviewing stored results.
 
-This is not a clinical system or medical device.
+This is a research prototype. It is not a medical device and must not be used
+for clinical diagnosis or patient care.
 
-## Project Overview
-
-```text
-FYPModels/           Model code, video pipeline, EEG adapter, checkpoints
-fyp_data_platform/   Local UI, Docker setup, MinIO/PostgreSQL catalog, model runner
-```
-
-The local website is a Flask UI inside `fyp_data_platform`.
+## How it works
 
 ```text
-Browser UI      http://127.0.0.1:8080
-MinIO console   http://localhost:9001
-PostgreSQL      localhost:5432
+Browser dashboard (React)
+          |
+          v
+Web API and orchestration (Flask)
+          |
+          +---- PostgreSQL: datasets, patients, recordings, model runs
+          +---- MinIO: videos, prediction files, plots, metrics
+          +---- FYPModels: authoritative seizure inference pipeline
 ```
 
-MinIO stores uploaded videos and model output files. PostgreSQL stores searchable
-metadata such as dataset ID, patient ID, recording ID, file paths, run status,
-and result summaries. Videos are not stored inside PostgreSQL.
+The browser never recalculates model metrics. It displays the prediction and
+metric artifacts produced by `FYPModels` and stored by `fyp_data_platform`.
 
-## Mac First-Time Setup
-
-Open Docker Desktop first and wait until it is running.
-
-```bash
-cd "/path/to/SeizureAI_v1.0/fyp_data_platform"
-cp .env.example .env
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev,ui]"
-python -m pip install -e "../FYPModels[video]"
-docker compose up -d --build
-python -m fyp_data_platform --config configs/docker.example.yaml db-upgrade
-python -m fyp_data_platform --config configs/docker.example.yaml ui --host 127.0.0.1 --port 8080
-```
-
-Open:
+## Repository structure
 
 ```text
-http://127.0.0.1:8080
+FYPModels/                    Model code and checkpoints
+fyp_data_platform/
+  frontend/                   React dashboard source
+  fyp_data_platform/          Flask API, catalog, storage, orchestration
+  migrations/                 PostgreSQL migrations
+  docker/                     Container startup and MinIO build
+  tests/                      Platform and API tests
+  docker-compose.yml          Complete local application
 ```
 
-## Mac Daily Run
+## Local addresses
 
-Open Docker Desktop first and wait until it is running.
+| Service | Address |
+|---|---|
+| SeizureAI dashboard | http://localhost:8080 |
+| MinIO console | http://localhost:9001 |
+| MinIO API | http://localhost:9000 |
+| PostgreSQL | localhost:5432 |
 
-```bash
-cd "/path/to/SeizureAI_v1.0/fyp_data_platform"
-source .venv/bin/activate
-docker compose up -d
-python -m fyp_data_platform --config configs/docker.example.yaml ui --host 127.0.0.1 --port 8080
-```
+Ports can be changed in `fyp_data_platform/.env`.
 
-Open:
+## Requirements
 
-```text
-http://127.0.0.1:8080
-```
+- Docker Desktop
+- Git
+- Enough disk space for container images, checkpoints, videos and results
 
-## Mac Safe Shutdown
+Python, Node.js, PostgreSQL and MinIO do not need to be installed on the host.
+The default image runs inference on CPU so the same setup works on Windows and
+macOS. CPU inference can be slow for long videos.
 
-Stop the website:
+## Windows first-time setup
 
-```bash
-Ctrl+C
-```
-
-Stop Docker services but keep all uploaded videos, results, and database rows:
-
-```bash
-docker compose stop
-```
-
-Use this only when you want to remove containers but keep stored data:
-
-```bash
-docker compose down
-```
-
-Do not run `docker compose down -v` unless you want to delete the local
-PostgreSQL database and MinIO files.
-
-## Windows First-Time Setup
-
-Use PowerShell. Open Docker Desktop first and wait until it is running.
+1. Install and open Docker Desktop. Wait until Docker is running.
+2. Open PowerShell in the repository and create the local configuration:
 
 ```powershell
-cd "C:\path\to\SeizureAI_v1.0\fyp_data_platform"
+cd fyp_data_platform
 Copy-Item .env.example .env
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev,ui]"
-python -m pip install -e "..\FYPModels[video]"
-docker compose up -d --build
-python -m fyp_data_platform --config configs/docker.example.yaml db-upgrade
-python -m fyp_data_platform --config configs/docker.example.yaml ui --host 127.0.0.1 --port 8080
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8080
-```
-
-## Windows Daily Run
-
-Use PowerShell. Open Docker Desktop first and wait until it is running.
+3. Open `.env` and replace the example PostgreSQL and MinIO passwords. Keep the
+   MinIO password identical in `MINIO_ROOT_PASSWORD` and `AWS_SECRET_ACCESS_KEY`.
+4. Build and start everything:
 
 ```powershell
-cd "C:\path\to\SeizureAI_v1.0\fyp_data_platform"
-.\.venv\Scripts\Activate.ps1
-docker compose up -d
-python -m fyp_data_platform --config configs/docker.example.yaml ui --host 127.0.0.1 --port 8080
+docker compose up --build
 ```
 
-Open:
+The first build can take a while. When `app` is healthy, open
+http://localhost:8080. Database migrations and bucket creation are automatic.
 
-```text
-http://127.0.0.1:8080
+## macOS first-time setup
+
+1. Install and open Docker Desktop. Wait until Docker is running.
+2. Open Terminal in the repository and create the local configuration:
+
+```bash
+cd fyp_data_platform
+cp .env.example .env
 ```
 
-## Windows Safe Shutdown
+3. Open `.env` and replace the example PostgreSQL and MinIO passwords. Keep the
+   MinIO password identical in `MINIO_ROOT_PASSWORD` and `AWS_SECRET_ACCESS_KEY`.
+4. Build and start everything:
 
-Stop the website:
-
-```text
-Ctrl+C
+```bash
+docker compose up --build
 ```
 
-Stop Docker services but keep all uploaded videos, results, and database rows:
+When `app` is healthy, open http://localhost:8080. Apple Silicon uses the
+CPU-oriented image, so inference may be slower than on a CUDA-capable machine.
+
+## Windows daily run
+
+Open Docker Desktop, then run:
+
+```powershell
+cd fyp_data_platform
+docker compose up
+```
+
+Open http://localhost:8080. Stop with `Ctrl+C`, then optionally run:
 
 ```powershell
 docker compose stop
 ```
 
-Use this only when you want to remove containers but keep stored data:
+## macOS daily run
 
-```powershell
+Open Docker Desktop, then run:
+
+```bash
+cd fyp_data_platform
+docker compose up
+```
+
+Open http://localhost:8080. Stop with `Ctrl+C`, then optionally run:
+
+```bash
+docker compose stop
+```
+
+## Data safety
+
+PostgreSQL, MinIO and model working data use named Docker volumes. Both of these
+commands keep stored data:
+
+```text
+docker compose stop
 docker compose down
 ```
 
-Do not run `docker compose down -v` unless you want to delete the local
-PostgreSQL database and MinIO files.
+Do not run `docker compose down -v` unless you intentionally want to delete the
+database, uploaded videos and stored results.
 
-## Basic Use
+## Basic use
 
-1. Start Docker Desktop.
-2. Run the daily command for your operating system.
-3. Open `http://127.0.0.1:8080`.
-4. Drag and drop an MP4 video into the upload area.
-5. Click `Run` beside the uploaded video.
-6. Click the completed model run to view detection result, timestamps, and probabilities.
+1. Open the dashboard.
+2. Choose **Upload** and register videos.
+3. Open **Recordings** and select **Run**.
+4. Wait for inference to finish. Only one inference run is allowed at a time.
+5. Open **Model runs** to view probabilities, events, metrics and artifacts.
 
-## Local Files Not Pushed
+An upload without a registered label workbook is prediction-only. Accuracy
+metrics require matching labels registered under the same dataset and recording.
 
-Do not commit local videos, generated results, database files, or environment
-folders.
+## Development and tests
+
+Backend tests:
 
 ```text
-.env
-.venv/
-fyp_data_platform/work/
-fyp_data_platform/data/
-FYPModels/test_video/
-FYPModels/results/
-*.mp4
-*.zip
+cd fyp_data_platform
+python -m pip install -e ".[dev,ui]"
+python -m pytest -q
 ```
+
+Frontend production build:
+
+```text
+cd fyp_data_platform/frontend
+pnpm install
+pnpm run build
+```
+
+For UI development, run Flask on port 8080 and Vite on port 5173. Vite proxies
+`/api` to Flask.

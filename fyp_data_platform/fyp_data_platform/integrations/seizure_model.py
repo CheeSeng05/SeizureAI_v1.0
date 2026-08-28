@@ -152,6 +152,13 @@ class SeizureModelIntegration:
         data["video"] = str(staged.get("video", project / "__missing_video__"))
         data["video_labels"] = str(staged["labels"]) if "labels" in staged else None
         data["eeg_csv"] = str(staged.get("eeg", project / "__missing_eeg__"))
+        # Never carry the sample recording's identity into a catalogued upload.
+        # A matching label workbook may identify its own single annotation row.
+        if "video" in staged:
+            data["video_provenance"] = {
+                "expected_sha256": sha256_file(staged["video"]),
+                "source": "fyp_data_platform catalog",
+            }
         for section, keys in {
             "video_encoder": ("source", "checkpoint", "dynamic_partition", "pose_source", "pose_checkpoint"),
             "eeg_encoder": ("checkpoint",),

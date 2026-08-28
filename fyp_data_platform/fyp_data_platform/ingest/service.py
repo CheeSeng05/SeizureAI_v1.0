@@ -15,7 +15,6 @@ from sqlalchemy.orm import sessionmaker
 from fyp_data_platform.config.settings import Settings
 from fyp_data_platform.db.models import StoredFile
 from fyp_data_platform.db.repository import CatalogRepository
-from fyp_data_platform.integrations.body_pose import load_body_annotations
 from fyp_data_platform.storage.base import StorageBackend
 from fyp_data_platform.storage.integrity import sha256_file
 from fyp_data_platform.storage.keys import source_key
@@ -137,6 +136,42 @@ def _recording_metadata(files: list[BidsFile]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _seizeit2_annotations(files: list[BidsFile]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Read the two canonical SeizeIT2 classes directly from BIDS events.tsv."""
+    annotations: list[dict[str, Any]] = []
+    excluded: dict[str, int] = {}
+    for item in files:
+        if item.role != "annotation" or not item.materializable or not item.recording_id or not item.subject_id:
+            continue
+        with item.path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for source in csv.DictReader(handle, delimiter="\t"):
+                event_type = str(source.get("eventType") or source.get("trial_type") or "").strip()
+                lowered = event_type.lower()
+                label = "normal" if lowered in {"bckg", "background", "normal"} else "ictal" if lowered.startswith(("sz", "seizure")) else None
+                if label is None:
+                    excluded[event_type or "unknown"] = excluded.get(event_type or "unknown", 0) + 1
+                    continue
+                try:
+                    start = float(source["onset"])
+                    duration = float(source["duration"])
+                except (KeyError, TypeError, ValueError):
+                    excluded["invalid_time"] = excluded.get("invalid_time", 0) + 1
+                    continue
+                annotations.append({
+                    "dataset": "seizeit2", "media_id": item.recording_id,
+                    "recording_id": item.recording_id, "patient_id": item.subject_id,
+                    "session_id": item.session_id, "start_sec": start,
+                    "end_sec": start + duration, "label": label,
+                    "source_event_type": event_type,
+                    "lateralization": _optional_string(source.get("lateralization")),
+                    "localization": _optional_string(source.get("localization")),
+                    "confidence": _float_or_none(source.get("confidence")),
+                    "derived_label": label, "annotation_source": item.relative_path,
+                    "source_tsv_path": item.relative_path,
+                })
+    return annotations, excluded
+
+
 def ingest_seizeit2(
     *,
     settings: Settings,
@@ -164,26 +199,12 @@ def ingest_seizeit2(
         report.warnings.append("No files matched the requested dataset subset.")
         return report
 
-    annotation_config = {
-        "subjects": sorted(selected_subjects or []),
-        "sessions": sorted(selected_sessions or []),
-    }
-    annotations: list[dict[str, Any]] = []
-    try:
-        annotations, excluded = load_body_annotations(
-            settings,
-            adapter_type="seizeit2",
-            source=source,
-            config=annotation_config,
-            active_labels=["normal", "ictal"],
-        )
-        report.annotation_rows = len(annotations)
-        report.excluded_event_counts = excluded
-        for row in annotations:
-            label = str(row["label"])
-            report.annotation_label_counts[label] = report.annotation_label_counts.get(label, 0) + 1
-    except (FileNotFoundError, RuntimeError) as error:
-        report.warnings.append(str(error))
+    annotations, excluded = _seizeit2_annotations(files)
+    report.annotation_rows = len(annotations)
+    report.excluded_event_counts = excluded
+    for row in annotations:
+        label = str(row["label"])
+        report.annotation_label_counts[label] = report.annotation_label_counts.get(label, 0) + 1
 
     for item in files:
         if _should_store(item, include_edf=include_edf, include_video=include_video):
@@ -353,7 +374,14 @@ def ingest_seizeit2(
 
 
 def _optional_string(value: Any) -> str | None:
-    return None if value is None else str(value)
+    return None if value in (None, "", "n/a") else str(value)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return None if value in (None, "", "n/a") else float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _entity_value(recording_id: str, name: str) -> str | None:

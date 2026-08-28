@@ -1,0 +1,17 @@
+.git
+.agents
+.codex
+BackEnd
+FrontEnd
+**/.env
+**/.venv*
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/dist
+fyp_data_platform/data
+fyp_data_platform/work
+FYPModels/results
+FYPModels/test_video
+*.mp4
+*.zip

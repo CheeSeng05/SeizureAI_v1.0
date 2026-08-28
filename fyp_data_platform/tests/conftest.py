@@ -61,8 +61,6 @@ def settings(tmp_path: Path) -> Settings:
         s3_kms_key_id=None,
         model_project_path=PROJECT_ROOT.parent / "FYPModels",
         model_python=None,
-        body_pose_project_path=PROJECT_ROOT.parent / "BodyPose" / "body_pose_fyp",
-        body_pose_python=None,
         work_root=tmp_path / "work",
         log_level="INFO",
     )

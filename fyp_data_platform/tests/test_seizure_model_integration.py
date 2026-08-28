@@ -45,6 +45,10 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
         import yaml
 
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["data"]["video_provenance"] == {
+            "expected_sha256": video_meta.sha256,
+            "source": "fyp_data_platform catalog",
+        }
         result_dir = Path(config["testing"]["output_directory"]) / "video_only"
         result_dir.mkdir(parents=True)
         (result_dir / "metrics.json").write_text(json.dumps({"sensitivity": 0.8}), encoding="utf-8")

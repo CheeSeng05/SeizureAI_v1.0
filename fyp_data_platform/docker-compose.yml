@@ -1,4 +1,41 @@
 services:
+  app:
+    build:
+      context: ..
+      dockerfile: fyp_data_platform/Dockerfile
+    image: seizureai-platform:local
+    container_name: seizureai-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    environment:
+      FYP_ENVIRONMENT: docker
+      FYP_STORAGE_BACKEND: s3
+      DATABASE_URL: postgresql+psycopg://${DB_USER:-fyp_user}:${DB_PASSWORD:-change_me}@postgres:5432/${DB_NAME:-fyp_data}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-fyp_minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-change_me_minio}
+      AWS_REGION: ${AWS_REGION:-ap-southeast-1}
+      S3_BUCKET: ${S3_BUCKET:-fyp-local}
+      S3_PREFIX: ${S3_PREFIX:-fyp-dev}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_SERVER_SIDE_ENCRYPTION: ""
+      FYP_MODEL_PROJECT_PATH: /app/FYPModels
+      FYP_MODEL_PYTHON: /usr/local/bin/python
+      FYP_WORK_ROOT: /app/work
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - fyp_work_data:/app/work
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   postgres:
     image: postgres:16-alpine
     container_name: fyp-data-postgres
@@ -61,3 +98,4 @@ services:
 volumes:
   fyp_postgres_data:
   fyp_minio_data:
+  fyp_work_data:
