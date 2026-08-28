@@ -3,6 +3,7 @@ services:
     build:
       context: ..
       dockerfile: fyp_data_platform/Dockerfile
+      target: application
     image: seizureai-platform:local
     container_name: seizureai-app
     restart: unless-stopped

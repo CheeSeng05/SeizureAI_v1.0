@@ -21,3 +21,9 @@ WORKDIR /app/fyp_data_platform
 RUN chmod +x docker/entrypoint.sh
 EXPOSE 8080
 ENTRYPOINT ["docker/entrypoint.sh"]
+
+FROM application AS gpu
+RUN python -m pip install --upgrade --force-reinstall \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu128
+ENV FYP_COMPUTE_PROFILE=nvidia-cuda \
+    FYP_REQUIRE_CUDA=1

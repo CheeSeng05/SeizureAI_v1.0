@@ -18,6 +18,8 @@ def test_health_and_empty_catalog_use_platform_database(settings, migrated_db, m
     assert health.get_json()["counts"] == {
         "datasets": 0, "patients": 0, "recordings": 0, "files": 0, "runs": 0
     }
+    assert health.get_json()["compute"]["mode"] in {"cpu", "cuda"}
+    assert "pytorch_version" in health.get_json()["compute"]
     assert catalog.status_code == 200
     assert catalog.get_json() == {"videos": [], "runs": []}
 

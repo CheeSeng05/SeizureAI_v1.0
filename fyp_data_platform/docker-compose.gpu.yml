@@ -1,0 +1,9 @@
+services:
+  app:
+    build:
+      target: gpu
+    image: seizureai-platform:cuda
+    gpus: all
+    environment:
+      FYP_COMPUTE_PROFILE: nvidia-cuda
+      FYP_REQUIRE_CUDA: "1"

@@ -15,6 +15,7 @@ from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from fyp_data_platform.config.settings import PROJECT_ROOT, Settings, load_settings
+from fyp_data_platform.compute import compute_info
 from fyp_data_platform.db.models import Dataset, ModelRun, Patient, Recording, StoredFile
 from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.db.session import create_engine_and_session
@@ -234,6 +235,7 @@ def _run_summary(row: ModelRun) -> dict[str, Any]:
     return {
         "id": row.id, "status": row.status, "modality": row.modality,
         "dataset_id": config.get("dataset_id"), "recording_id": config.get("recording_id"),
+        "compute": config.get("compute"),
         "require_labels": bool(config.get("require_labels")), "artifact_count": len(artifacts),
         "output_prefix": str(artifacts[0].get("key", "")).rsplit("/", 1)[0] if artifacts else None,
         "outcome": _outcome(row), "error": payload.get("error"),
@@ -288,7 +290,11 @@ def create_app(config_path: str | None = None) -> Any:
                 "files": session.scalar(select(func.count()).select_from(StoredFile)) or 0,
                 "runs": session.scalar(select(func.count()).select_from(ModelRun)) or 0,
             }
-        return jsonify({"status": "ok", "environment": settings.environment, "storage_backend": settings.storage_backend, "counts": counts})
+        return jsonify({
+            "status": "ok", "environment": settings.environment,
+            "storage_backend": settings.storage_backend, "counts": counts,
+            "compute": compute_info(),
+        })
 
     @app.get("/api/catalog")
     def catalog() -> Any:

@@ -14,6 +14,7 @@ import yaml
 from sqlalchemy import select
 
 from fyp_data_platform.config.settings import Settings
+from fyp_data_platform.compute import compute_info
 from fyp_data_platform.db.models import ModelRun, StoredFile
 from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.storage.base import StorageBackend
@@ -227,6 +228,7 @@ class SeizureModelIntegration:
                     "command": command,
                     "config": config,
                     "require_labels": require_labels,
+                    "compute": compute_info(),
                 },
                 metrics_json={}, artifact_file_id=None, started_at=datetime.now(timezone.utc), completed_at=None,
             )

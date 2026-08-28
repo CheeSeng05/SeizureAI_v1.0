@@ -33,7 +33,8 @@ fyp_data_platform/
   migrations/                 PostgreSQL migrations
   docker/                     Container startup and MinIO build
   tests/                      Platform and API tests
-  docker-compose.yml          Complete local application
+  docker-compose.yml          Universal CPU application
+  docker-compose.gpu.yml      NVIDIA CUDA override
 ```
 
 ## Local addresses
@@ -54,8 +55,10 @@ Ports can be changed in `fyp_data_platform/.env`.
 - Enough disk space for container images, checkpoints, videos and results
 
 Python, Node.js, PostgreSQL and MinIO do not need to be installed on the host.
-The default image runs inference on CPU so the same setup works on Windows and
-macOS. CPU inference can be slow for long videos.
+The default image runs inference on CPU so the same setup works on Windows,
+macOS and Linux. NVIDIA users can build the optional CUDA image. The dashboard's
+**System** page reports the processing mode, device name, memory, PyTorch version
+and CUDA runtime that the application can actually access.
 
 ## Windows first-time setup
 
@@ -78,6 +81,25 @@ docker compose up --build
 The first build can take a while. When `app` is healthy, open
 http://localhost:8080. Database migrations and bucket creation are automatic.
 
+### Windows with an NVIDIA GPU
+
+CUDA mode requires a current NVIDIA Windows driver and Docker Desktop using its
+WSL2 backend. Confirm the driver can see the GPU first:
+
+```powershell
+nvidia-smi
+```
+
+Build and start the CUDA application with:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+The CUDA image is larger and takes longer to download the first time. Startup
+prints the detected GPU and refuses to continue if PyTorch cannot access CUDA.
+Open http://localhost:8080/system to verify the active processing device.
+
 ## macOS first-time setup
 
 1. Install and open Docker Desktop. Wait until Docker is running.
@@ -98,6 +120,7 @@ docker compose up --build
 
 When `app` is healthy, open http://localhost:8080. Apple Silicon uses the
 CPU-oriented image, so inference may be slower than on a CUDA-capable machine.
+CUDA is an NVIDIA technology and is not available through Linux Docker on macOS.
 
 ## Windows daily run
 
@@ -108,11 +131,56 @@ cd fyp_data_platform
 docker compose up
 ```
 
+On a configured NVIDIA computer, use this instead:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+```
+
 Open http://localhost:8080. Stop with `Ctrl+C`, then optionally run:
 
 ```powershell
 docker compose stop
 ```
+
+## Choosing CPU or CUDA
+
+Use universal CPU mode on macOS, computers without an NVIDIA GPU, or whenever
+maximum portability matters:
+
+```text
+docker compose up
+```
+
+Use CUDA mode on Windows/Linux computers where Docker can access an NVIDIA GPU:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+```
+
+The application workflow and address are identical in both modes. Upload a
+recording and click **Run** as usual; the model's existing `device=auto` setting
+selects CUDA when the GPU container exposes it. Moving between different
+supported NVIDIA models does not require changing `.env` or resetting volumes.
+
+To switch modes, stop the current stack with `Ctrl+C` and `docker compose down`,
+then start the other mode. Do not add `-v`; the same database, uploads and results
+are retained.
+
+AMD GPUs currently fall back to the universal CPU setup. Apple Metal/MPS is not
+available to this Linux Docker container, so Macs also use CPU mode.
+
+### Verify NVIDIA Docker access
+
+If CUDA startup fails, update the NVIDIA driver and Docker Desktop, confirm WSL2
+is enabled, and verify Docker can expose the GPU:
+
+```powershell
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+```
+
+After startup, the **System** page is the authoritative check. It must show
+`NVIDIA CUDA` and the GPU name; simply owning an NVIDIA GPU is not sufficient.
 
 ## macOS daily run
 
