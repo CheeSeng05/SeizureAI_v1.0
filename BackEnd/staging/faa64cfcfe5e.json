@@ -1,0 +1,13 @@
+{
+  "upload_id": "faa64cfcfe5e",
+  "filename": "Sz4N.mp4",
+  "stored_path": "staging\\faa64cfcfe5e__Sz4N.mp4",
+  "size_bytes": 3465132,
+  "sha256": "ceda3e7e2807e97ac1f30b469f0791bc06d0b10920af8da5d4f5386976b60b8d",
+  "received_at": "2026-08-26T16:34:17+00:00",
+  "patient_id": "Pat02",
+  "seizure_id": "Sz3",
+  "seizure_type": null,
+  "eeg_onset_sec": 2.0,
+  "clinical_onset_sec": 3.0
+}
