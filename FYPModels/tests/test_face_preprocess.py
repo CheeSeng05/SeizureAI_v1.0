@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+import unittest
+
+from seizure_multimodal.facial.face_preprocess import _patient_split, _window_starts
+
+
+class FacePreprocessHelpersTest(unittest.TestCase):
+    def test_complete_overlapping_windows_only(self) -> None:
+        self.assertEqual(list(_window_starts(90, 40, 20)), [0, 20, 40])
+        self.assertEqual(list(_window_starts(39, 40, 20)), [])
+
+    def test_split_is_stable_and_patient_level(self) -> None:
+        self.assertEqual(_patient_split("S47"), _patient_split("S47"))
+        self.assertIn(_patient_split("S47"), {"train", "validation", "test"})
+
+    def test_invalid_window_parameters_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive"):
+            list(_window_starts(100, 0, 20))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,4 +1,4 @@
-numpy>=1.26
+numpy>=1.26,<2.0
 scipy>=1.11
 pandas>=2.0
 openpyxl>=3.1
@@ -9,6 +9,7 @@ torch>=2.1
 torchvision>=0.16
 timm>=0.9
 opencv-python-headless>=4.8
+mediapipe>=0.10
 tensorflow>=2.15
 pyedflib>=0.1.36
 mne>=1.6
