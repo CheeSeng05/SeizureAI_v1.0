@@ -152,6 +152,12 @@ def main() -> None:
     parser.add_argument("--window-seconds", type=float, default=8.0)
     parser.add_argument("--stride-seconds", type=float, default=4.0)
     parser.add_argument("--face-size", type=int, default=224)
+    parser.add_argument("--max-poses", type=int, default=4)
+    parser.add_argument("--head-margin", type=float, default=0.75)
+    parser.add_argument(
+        "--roi-config",
+        help="Optional JSON mapping patient IDs to normalized [x1,y1,x2,y2] regions.",
+    )
     parser.add_argument(
         "--pose-model",
         default="checkpoints/pretrained/mediapipe/pose_landmarker_lite.task",
@@ -189,6 +195,12 @@ def main() -> None:
     if args.plan_only:
         return
 
+    roi_config: dict[str, list[float]] = {}
+    if args.roi_config:
+        roi_config = json.loads(Path(args.roi_config).read_text(encoding="utf-8"))
+        if not isinstance(roi_config, dict):
+            raise TypeError("--roi-config must contain a JSON object")
+
     selected = rows[: args.limit] if args.limit is not None else rows
     manifest = output / "video_manifest.csv"
     if manifest.exists():
@@ -216,6 +228,9 @@ def main() -> None:
             split=row["split"],
             append_manifest=index > 1,
             face_size=args.face_size,
+            patient_roi=tuple(roi_config.get(row["patient_id"], [0, 0, 1, 1])),
+            max_poses=args.max_poses,
+            head_margin=args.head_margin,
         )
         if result.windows_written == 0:
             print(f"WARNING: no complete windows written for {row['source_video']}")

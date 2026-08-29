@@ -48,7 +48,7 @@ class FaceWindowDataset(Dataset):
             row
             for row in rows
             if row["split"] == split
-            and float(row["face_detection_fraction"])
+            and float(row.get("face_region_fraction") or row["face_detection_fraction"])
             >= minimum_face_detection
         ]
 
