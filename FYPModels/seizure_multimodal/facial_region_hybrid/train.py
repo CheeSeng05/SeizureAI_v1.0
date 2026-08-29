@@ -18,6 +18,16 @@ from .facial_model import ResNet50GRU
 CLASSES = ("normal", "seizure")
 
 
+def resolve_device(requested: str) -> torch.device:
+    if requested != "auto":
+        return torch.device(requested)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 class FaceWindowDataset(Dataset):
     def __init__(
         self,
@@ -126,7 +136,7 @@ def run_training_epoch(
     return total_loss / total_samples
 
 
-def run_validation(
+def run_evaluation(
     model: ResNet50GRU,
     loader: DataLoader,
     criterion: nn.Module,
@@ -190,7 +200,7 @@ def save_checkpoint(
             "num_classes": len(CLASSES),
             "gru_hidden_size": 256,
             "bidirectional": True,
-            "validation_metrics": metrics,
+            "test_metrics": metrics,
         },
         path,
     )
@@ -207,24 +217,27 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda", "mps"),
+        default="auto",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    device = resolve_device(args.device)
     print(f"Using device: {device}")
 
     train_dataset = FaceWindowDataset(
         args.manifest,
         split="train",
     )
-    validation_dataset = FaceWindowDataset(
+    test_dataset = FaceWindowDataset(
         args.manifest,
-        split="validation",
+        split="test",
     )
 
     train_loader = DataLoader(
@@ -234,8 +247,8 @@ def main() -> None:
         num_workers=args.workers,
         pin_memory=device.type == "cuda",
     )
-    validation_loader = DataLoader(
-        validation_dataset,
+    test_loader = DataLoader(
+        test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
@@ -269,7 +282,6 @@ def main() -> None:
 
     criterion = nn.CrossEntropyLoss()
     checkpoint_path = Path(args.checkpoint)
-    best_f1 = -1.0
     history: list[dict] = []
 
     for epoch in range(1, args.epochs + 1):
@@ -281,36 +293,30 @@ def main() -> None:
             device,
         )
 
-        validation = run_validation(
-            model,
-            validation_loader,
-            criterion,
-            device,
-        )
-
         result = {
             "epoch": epoch,
             "train_loss": train_loss,
-            **{
-                f"validation_{name}": value
-                for name, value in validation.items()
-            },
         }
         history.append(result)
         print(json.dumps(result))
 
-        if validation["macro_f1"] > best_f1:
-            best_f1 = validation["macro_f1"]
-
-            save_checkpoint(
-                checkpoint_path,
-                model,
-                optimizer,
-                epoch,
-                validation,
-            )
-
-            print(f"Saved best checkpoint: {checkpoint_path}")
+    # Evaluate exactly once after fixed-epoch training so the held-out test set
+    # is not used to select a checkpoint or tune training duration.
+    test_metrics = run_evaluation(
+        model,
+        test_loader,
+        criterion,
+        device,
+    )
+    print(json.dumps({f"test_{key}": value for key, value in test_metrics.items()}))
+    save_checkpoint(
+        checkpoint_path,
+        model,
+        optimizer,
+        args.epochs,
+        test_metrics,
+    )
+    print(f"Saved final checkpoint: {checkpoint_path}")
 
     history_path = checkpoint_path.with_suffix(".history.json")
     history_path.write_text(

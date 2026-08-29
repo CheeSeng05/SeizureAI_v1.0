@@ -388,6 +388,7 @@ def extract_video(
             if time_sec + 1e-9 < next_sample:
                 continue
 
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             rgb = np.ascontiguousarray(rgb)
 
             media_image = mp.Image(
@@ -509,16 +510,20 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument("--append-manifest", action="store_true",)
+
     args = parser.parse_args()
-    extract_video(args.video, args.output, args.sample_id or Path(args.video).stem,
-                  args.fps, args.window_seconds, 
-                  pose_model_path=args.pose_model,
-                  face_model_path=args.face_model,
-                  stride_seconds=args.stride_seconds,
-                  patient_id=args.patient_id, label=args.label, dataset=args.dataset, split=args.split,
-                  face_size=args.face_size, face_margin=args.face_margin,
-                  box_smoothing=args.box_smoothing,
-                  max_box_reuse_frames=args.max_box_reuse_frames)
+    extract_video(args.video, args.output,
+            args.sample_id or Path(args.video).stem,
+            args.fps, args.window_seconds,
+            pose_model_path=args.pose_model,
+            face_model_path=args.face_model,
+            stride_seconds=args.stride_seconds,
+            patient_id=args.patient_id, label=args.label, dataset=args.dataset, split=args.split,
+            append_manifest=args.append_manifest,
+            face_size=args.face_size, face_margin=args.face_margin,
+            box_smoothing=args.box_smoothing,
+            max_box_reuse_frames=args.max_box_reuse_frames)
     
 
 

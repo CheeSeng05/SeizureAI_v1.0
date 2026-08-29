@@ -1,0 +1,225 @@
+"""Create a reproducible class-stratified video split and preprocess it."""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import random
+from pathlib import Path
+
+from .face_preprocess import extract_video
+
+
+PLAN_FIELDS = (
+    "source_video",
+    "recording_id",
+    "patient_id",
+    "class_name",
+    "label",
+    "split",
+)
+
+
+def _patient_id(path: Path) -> str:
+    return path.stem.split("_", 1)[0]
+
+
+def stratified_video_plan(
+    dataset_root: str | Path,
+    *,
+    train_fraction: float = 0.7,
+    seed: int = 42,
+    split_unit: str = "patient",
+) -> list[dict[str, str]]:
+    """Build a class-balanced split by patient (preferred) or by video."""
+    if not 0.0 < train_fraction < 1.0:
+        raise ValueError("train_fraction must be between 0 and 1")
+    if split_unit not in {"patient", "video"}:
+        raise ValueError("split_unit must be 'patient' or 'video'")
+
+    root = Path(dataset_root).resolve()
+    class_specs = (("Normal", 0), ("Seizure", 1))
+    videos_by_class: dict[str, list[Path]] = {}
+    counts_by_class: dict[str, dict[str, int]] = {}
+    for class_name, _ in class_specs:
+        videos = sorted((root / class_name).glob("*.mp4"))
+        if not videos:
+            raise FileNotFoundError(f"No MP4 videos found in {root / class_name}")
+        videos_by_class[class_name] = videos
+        counts: dict[str, int] = {}
+        for video in videos:
+            patient = _patient_id(video)
+            counts[patient] = counts.get(patient, 0) + 1
+        counts_by_class[class_name] = counts
+
+    training_patients: set[str] | None = None
+    if split_unit == "patient":
+        normal_counts = counts_by_class["Normal"]
+        seizure_counts = counts_by_class["Seizure"]
+        if normal_counts != seizure_counts:
+            raise ValueError(
+                "Patient-level splitting currently requires matching per-patient video "
+                "counts in Normal and Seizure so both classes retain the same ratio"
+            )
+        target = round(sum(normal_counts.values()) * train_fraction)
+        training_patients = _closest_patient_subset(normal_counts, target, seed)
+
+    rows: list[dict[str, str]] = []
+
+    for class_name, label in class_specs:
+        videos = videos_by_class[class_name]
+        if split_unit == "video":
+            # A class-specific deterministic shuffle makes the plan reproducible.
+            random.Random(f"{seed}:{class_name}").shuffle(videos)
+            train_count = round(len(videos) * train_fraction)
+
+        for index, video in enumerate(videos):
+            patient = _patient_id(video)
+            if training_patients is not None:
+                split = "train" if patient in training_patients else "test"
+            else:
+                split = "train" if index < train_count else "test"
+            rows.append(
+                {
+                    "source_video": str(video),
+                    "recording_id": f"{class_name.lower()}_{video.stem}",
+                    "patient_id": patient,
+                    "class_name": class_name.lower(),
+                    "label": str(label),
+                    "split": split,
+                }
+            )
+    return rows
+
+
+def _closest_patient_subset(
+    patient_counts: dict[str, int], target_videos: int, seed: int
+) -> set[str]:
+    """Find a deterministic patient group with video count closest to target."""
+    patients = sorted(patient_counts)
+    random.Random(seed).shuffle(patients)
+    subsets: dict[int, tuple[str, ...]] = {0: ()}
+    for patient in patients:
+        additions = {
+            total + patient_counts[patient]: selected + (patient,)
+            for total, selected in list(subsets.items())
+        }
+        for total, selected in additions.items():
+            subsets.setdefault(total, selected)
+    viable = [total for total in subsets if 0 < total < sum(patient_counts.values())]
+    best_total = min(viable, key=lambda total: (abs(total - target_videos), total))
+    return set(subsets[best_total])
+
+
+def write_plan(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=PLAN_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def summarize_plan(rows: list[dict[str, str]]) -> dict:
+    counts: dict[str, int] = {}
+    patients: dict[str, set[str]] = {"train": set(), "test": set()}
+    for row in rows:
+        key = f"{row['split']}_{row['class_name']}"
+        counts[key] = counts.get(key, 0) + 1
+        patients[row["split"]].add(row["patient_id"])
+    overlap = sorted(patients["train"] & patients["test"])
+    return {
+        "video_counts": counts,
+        "train_patients": len(patients["train"]),
+        "test_patients": len(patients["test"]),
+        "patient_overlap": overlap,
+        "patient_leakage_warning": bool(overlap),
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset-root", required=True)
+    parser.add_argument("--output", default="results/facial_dataset")
+    parser.add_argument("--train-fraction", type=float, default=0.7)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--split-unit",
+        choices=("patient", "video"),
+        default="patient",
+        help="Keep patients disjoint by default; 'video' reproduces a leakage-prone video split.",
+    )
+    parser.add_argument("--fps", type=float, default=5.0)
+    parser.add_argument("--window-seconds", type=float, default=8.0)
+    parser.add_argument("--stride-seconds", type=float, default=4.0)
+    parser.add_argument("--face-size", type=int, default=224)
+    parser.add_argument(
+        "--pose-model",
+        default="checkpoints/pretrained/mediapipe/pose_landmarker_lite.task",
+    )
+    parser.add_argument(
+        "--face-model",
+        default="checkpoints/pretrained/mediapipe/face_landmarker.task",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Write and summarize the 70/30 assignment without preprocessing videos.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Process only the first N planned videos for an integration smoke test.",
+    )
+    args = parser.parse_args()
+
+    output = Path(args.output).resolve()
+    rows = stratified_video_plan(
+        args.dataset_root,
+        train_fraction=args.train_fraction,
+        seed=args.seed,
+        split_unit=args.split_unit,
+    )
+    write_plan(output / "video_split.csv", rows)
+    summary = summarize_plan(rows)
+    (output / "split_summary.json").write_text(
+        json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(summary, indent=2))
+
+    if args.plan_only:
+        return
+
+    selected = rows[: args.limit] if args.limit is not None else rows
+    manifest = output / "video_manifest.csv"
+    if manifest.exists():
+        raise FileExistsError(
+            f"Refusing to mix a new run with existing manifest: {manifest}. "
+            "Choose a new --output directory or move the old results."
+        )
+
+    for index, row in enumerate(selected, start=1):
+        print(
+            f"[{index}/{len(selected)}] {row['split']} {row['class_name']}: "
+            f"{row['source_video']}"
+        )
+        result = extract_video(
+            row["source_video"],
+            output,
+            row["recording_id"],
+            args.fps,
+            args.window_seconds,
+            pose_model_path=args.pose_model,
+            face_model_path=args.face_model,
+            stride_seconds=args.stride_seconds,
+            patient_id=row["patient_id"],
+            label=row["label"],
+            split=row["split"],
+            append_manifest=index > 1,
+            face_size=args.face_size,
+        )
+        if result.windows_written == 0:
+            print(f"WARNING: no complete windows written for {row['source_video']}")
+
+
+if __name__ == "__main__":
+    main()
