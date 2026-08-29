@@ -123,12 +123,14 @@ def _normalized_pose(result: Any, pose_index: int = 0) -> tuple[np.ndarray, bool
 def _select_patient_pose(
     result: Any,
     patient_roi: tuple[float, float, float, float],
+    previous_head_center: tuple[float, float] | None = None,
+    max_head_jump: float = 0.18,
 ) -> int | None:
-    """Select the most visible pose whose head lies in the configured ROI."""
+    """Select/track one patient's head without switching to another person."""
     if not result.pose_landmarks:
         return None
     x1, y1, x2, y2 = patient_roi
-    candidates: list[tuple[float, int]] = []
+    candidates: list[tuple[float, float, int]] = []
     for index, landmarks in enumerate(result.pose_landmarks):
         head = landmarks[:11]
         visible = [
@@ -151,8 +153,39 @@ def _select_patient_pose(
                 for point in visible
             ])
         )
-        candidates.append((visibility * len(visible), index))
-    return max(candidates)[1] if candidates else None
+        if previous_head_center is None:
+            # First acquisition: prefer the most complete, visible head in ROI.
+            candidates.append((0.0, -(visibility * len(visible)), index))
+            continue
+        distance = float(
+            np.hypot(
+                center_x - previous_head_center[0],
+                center_y - previous_head_center[1],
+            )
+        )
+        if distance <= max_head_jump:
+            # Tracking: spatial continuity takes priority over visibility.
+            candidates.append((distance, -(visibility * len(visible)), index))
+    return min(candidates)[2] if candidates else None
+
+
+def _pose_head_center(result: Any, pose_index: int | None) -> tuple[float, float] | None:
+    if pose_index is None or not result.pose_landmarks:
+        return None
+    visible = [
+        point
+        for point in result.pose_landmarks[pose_index][:11]
+        if point.x is not None
+        and point.y is not None
+        and (point.visibility is None or point.visibility >= 0.2)
+        and (point.presence is None or point.presence >= 0.2)
+    ]
+    if not visible:
+        return None
+    return (
+        float(np.mean([point.x for point in visible])),
+        float(np.mean([point.y for point in visible])),
+    )
 
 
 def _square_box(
@@ -446,10 +479,11 @@ def extract_video(
     face_size: int = 224,
     face_margin: float = 0.25,
     box_smoothing: float = 0.7,
-    max_box_reuse_frames: int = 5,
+    max_box_reuse_frames: int = 15,
     patient_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0),
     max_poses: int = 4,
     head_margin: float = 0.75,
+    max_head_jump: float = 0.18,
     preview: bool = False,
     preview_delay_ms: int = 1,
 ) -> PreprocessSummary:
@@ -480,6 +514,8 @@ def extract_video(
         raise ValueError("Invalid face margin, box smoothing, or box reuse setting")
     if max_poses <= 0:
         raise ValueError("max_poses must be positive")
+    if not 0 < max_head_jump <= 1:
+        raise ValueError("max_head_jump must be in the range (0, 1]")
     if not (
         len(patient_roi) == 4
         and 0 <= patient_roi[0] < patient_roi[2] <= 1
@@ -567,6 +603,7 @@ def extract_video(
     previous_face_gray: np.ndarray | None = None
     missed_face_frames = 0
     preview_active = preview
+    tracked_head_center: tuple[float, float] | None = None
 
     try:
         while True:
@@ -593,7 +630,15 @@ def extract_video(
                 timestamp_ms,
             )
 
-            pose_index = _select_patient_pose(pose_result, patient_roi)
+            pose_index = _select_patient_pose(
+                pose_result,
+                patient_roi,
+                tracked_head_center,
+                max_head_jump,
+            )
+            current_head_center = _pose_head_center(pose_result, pose_index)
+            if current_head_center is not None:
+                tracked_head_center = current_head_center
             pose, has_pose = _normalized_pose(
                 pose_result, pose_index if pose_index is not None else -1
             )
@@ -725,9 +770,15 @@ def main() -> None:
     parser.add_argument("--face-margin", type=float, default=.25)
 
     parser.add_argument("--box-smoothing", type=float, default=.7)
-    parser.add_argument("--max-box-reuse-frames", type=int, default=5)
+    parser.add_argument("--max-box-reuse-frames", type=int, default=15)
     parser.add_argument("--max-poses", type=int, default=4)
     parser.add_argument("--head-margin", type=float, default=.75)
+    parser.add_argument(
+        "--max-head-jump",
+        type=float,
+        default=.18,
+        help="Maximum normalized frame-to-frame head movement before rejecting an identity switch.",
+    )
     parser.add_argument(
         "--patient-roi",
         default="0,0,1,1",
@@ -784,6 +835,7 @@ def main() -> None:
             patient_roi=patient_roi,
             max_poses=args.max_poses,
             head_margin=args.head_margin,
+            max_head_jump=args.max_head_jump,
             preview=args.preview,
             preview_delay_ms=args.preview_delay_ms)
     

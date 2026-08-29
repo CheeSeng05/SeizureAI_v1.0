@@ -154,6 +154,8 @@ def main() -> None:
     parser.add_argument("--face-size", type=int, default=224)
     parser.add_argument("--max-poses", type=int, default=4)
     parser.add_argument("--head-margin", type=float, default=0.75)
+    parser.add_argument("--max-head-jump", type=float, default=0.18)
+    parser.add_argument("--max-box-reuse-frames", type=int, default=15)
     parser.add_argument(
         "--roi-config",
         help="Optional JSON mapping patient IDs to normalized [x1,y1,x2,y2] regions.",
@@ -231,6 +233,8 @@ def main() -> None:
             patient_roi=tuple(roi_config.get(row["patient_id"], [0, 0, 1, 1])),
             max_poses=args.max_poses,
             head_margin=args.head_margin,
+            max_head_jump=args.max_head_jump,
+            max_box_reuse_frames=args.max_box_reuse_frames,
         )
         if result.windows_written == 0:
             print(f"WARNING: no complete windows written for {row['source_video']}")

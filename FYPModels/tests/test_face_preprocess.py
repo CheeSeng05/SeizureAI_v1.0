@@ -6,6 +6,7 @@ import numpy as np
 
 from seizure_multimodal.facial_region_hybrid.face_preprocess import (
     _pose_head_box,
+    _pose_head_center,
     _select_patient_pose,
     _patient_split,
     _smooth_box,
@@ -53,6 +54,19 @@ class FacePreprocessHelpersTest(unittest.TestCase):
         result = _PoseResult([left, right])
         self.assertEqual(_select_patient_pose(result, (0, 0, .5, 1)), 0)
         self.assertEqual(_select_patient_pose(result, (.5, 0, 1, 1)), 1)
+
+    def test_pose_tracking_rejects_identity_switch(self) -> None:
+        patient = [_Point(.2, .2)] * 33
+        caretaker = [_Point(.8, .2)] * 33
+        result = _PoseResult([patient, caretaker])
+        self.assertEqual(
+            _select_patient_pose(result, (0, 0, 1, 1), (.21, .2), .12),
+            0,
+        )
+        self.assertIsNone(
+            _select_patient_pose(_PoseResult([caretaker]), (0, 0, 1, 1), (.2, .2), .12)
+        )
+        self.assertEqual(_pose_head_center(result, 0), (.2, .2))
 
     def test_pose_head_box_is_clipped_to_frame(self) -> None:
         pose = [_Point(.05 + index * .002, .05 + index * .002) for index in range(33)]

@@ -169,6 +169,44 @@ Those metrics are stored with `validity=simulated` and
 
 ## Model input pipelines
 
+### Facial preprocessing smoke test
+
+Run this command from the `FYPModels` directory to test the facial preprocessing
+pipeline on one seizure video before preparing the complete dataset:
+
+```bash
+MPLCONFIGDIR=/tmp/mpl-facial \
+python -m seizure_multimodal.facial_region_hybrid.face_preprocess \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  --output results/facial_head_smoke \
+  --sample-id seizure_S1_5_136 \
+  --patient-id S1 \
+  --label 1 \
+  --split train \
+  --fps 5 \
+  --window-seconds 2 \
+  --stride-seconds 1 \
+  --max-poses 4 \
+  --head-margin 0.75 \
+  --patient-roi "0.28,0.05,0.70,0.90" \
+  --preview \
+  --preview-delay-ms 150
+```
+
+The preview displays the selected head region and the exact `224×224` crop
+used to construct the model input. Press `q` or Escape to close the preview;
+preprocessing continues after the window closes. The patient ROI uses
+normalized `x1,y1,x2,y2` coordinates and should include the patient's possible
+head movement while excluding caretakers where possible.
+
+The command writes overlapping two-second windows to
+`results/facial_head_smoke/face`, together with pose and facial-geometry arrays
+and manifest metadata. The default identity-tracking settings allow a maximum
+normalized head jump of `0.18` and reuse the previous crop for at most 15
+sampled frames during short detection failures. Use a new output directory, or
+remove the previous smoke-test output, before repeating the same sample because
+manifest rows are not intended to be duplicated.
+
 ### VSViG
 
 Raw frames are decoded at their measured 29.97 FPS. The custom pose checkpoint
