@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-
+import torch
 
 FACE_LANDMARK_PAIRS = ((33, 133), (362, 263), (159, 145), (386, 374),
                        (61, 291), (13, 14), (78, 308), (1, 152), (10, 152), (234, 454))
@@ -25,6 +25,12 @@ MANIFEST_FIELDS = (
     "pose_detection_fraction", "face_detection_fraction", "face_box_reused_fraction",
 )
 
+face_window = np.load(
+    "results/facial_test/face/example.npy",
+    allow_pickle=False,
+)
+video = torch.from_numpy(face_window).float().unsqueeze(0)
+# print(video.shape)
 
 @dataclass(frozen=True)
 class PreprocessSummary:

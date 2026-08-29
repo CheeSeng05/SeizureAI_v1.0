@@ -11,6 +11,7 @@ __pycache__/
 test_video/
 datasets/
 results/
+facial-spatialtemporal/
 *.mp4
 *.mov
 *.avi
