@@ -14,6 +14,7 @@ import numpy as np
 
 from ..data_inspection import inspect_mp4, resolved_label_records
 from .vsvig_adapter import VSViGAdapter
+from ..progress import report_progress
 
 
 PATCH_POINT_ORDER = (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17)
@@ -403,6 +404,7 @@ def predict_video_file(
     batch_size: int = 8,
     pose_batch_size: int = 16,
     pose_input_height: int = 256,
+    progress_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray, dict[str, Any]]:
     if clip_frames != 30:
         raise ValueError("The pretrained VSViG checkpoint requires exactly 30 frames per clip")
@@ -444,6 +446,12 @@ def predict_video_file(
             frame_index = 0
             processed_clips = 0
             started = time.monotonic()
+            total_clips = metadata.frame_count // clip_frames
+            report_progress(
+                progress_config or {}, stage="video_inference",
+                label="Processing video clips", completed=0, total=total_clips,
+                elapsed_sec=0.0,
+            )
             while True:
                 clip_start = frame_index
                 frames: list[np.ndarray] = []
@@ -477,6 +485,12 @@ def predict_video_file(
                     )
                 )
                 processed_clips += 1
+                elapsed = time.monotonic() - started
+                report_progress(
+                    progress_config or {}, stage="video_inference",
+                    label="Processing video clips", completed=processed_clips,
+                    total=total_clips, elapsed_sec=elapsed,
+                )
                 if len(pending) >= batch_size:
                     new_rows, new_embeddings = _flush_clips(
                         adapter,
@@ -490,8 +504,6 @@ def predict_video_file(
                     embeddings.extend(new_embeddings)
                     pending = []
                 if processed_clips % 100 == 0:
-                    elapsed = time.monotonic() - started
-                    total_clips = metadata.frame_count // clip_frames
                     print(
                         f"video progress: {processed_clips}/{total_clips} clips "
                         f"({processed_clips / max(1, total_clips):.1%}), {elapsed:.1f}s elapsed",

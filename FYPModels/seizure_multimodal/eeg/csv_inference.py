@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
+import time
 
 from .eeg_adapter import EEGAdapter
+from ..progress import report_progress
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ def predict_eeg_csv(
     checkpoint_path: str | Path,
     config: Mapping[str, Any],
     batch_size: int = 64,
+    progress_config: Mapping[str, Any] | None = None,
 ) -> tuple[EEGCSVData, dict[str, np.ndarray]]:
     if batch_size <= 0:
         raise ValueError("EEG inference batch size must be positive")
@@ -115,13 +118,24 @@ def predict_eeg_csv(
     embeddings: list[np.ndarray] = []
     logits: list[np.ndarray] = []
     probabilities: list[np.ndarray] = []
-    for start in range(0, len(expanded), batch_size):
+    total_batches = max(1, (len(expanded) + batch_size - 1) // batch_size)
+    started = time.monotonic()
+    report_progress(
+        progress_config or {}, stage="eeg_inference", label="Processing EEG batches",
+        completed=0, total=total_batches, elapsed_sec=0.0,
+    )
+    for batch_index, start in enumerate(range(0, len(expanded), batch_size), start=1):
         batch = ((expanded[start : start + batch_size] - global_mean) / (global_std + 1e-8))
         model_input = np.repeat(batch[:, :, None], 18, axis=2).astype(np.float32)
         output = adapter.predict(model_input, preprocessed=True)
         embeddings.append(np.asarray(output["embedding"]))
         logits.append(np.asarray(output["logits"]).reshape(-1))
         probabilities.append(np.asarray(output["probability"]).reshape(-1))
+        report_progress(
+            progress_config or {}, stage="eeg_inference", label="Processing EEG batches",
+            completed=batch_index, total=total_batches,
+            elapsed_sec=time.monotonic() - started,
+        )
     return data, {
         "embedding": np.concatenate(embeddings),
         "logits": np.concatenate(logits),

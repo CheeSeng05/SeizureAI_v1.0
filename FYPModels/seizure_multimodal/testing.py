@@ -375,6 +375,7 @@ def run_video_workflow(
             batch_size=int(video_cfg.get("inference_batch_size", 8)),
             pose_batch_size=int(video_cfg.get("pose_batch_size", 16)),
             pose_input_height=int(video_cfg.get("pose_input_height", 256)),
+            progress_config=dict(config),
         )
         metrics = _video_metrics(rows, run_details)
         augmented = _augment_rows(rows, metadata)
@@ -492,6 +493,7 @@ def run_eeg_workflow(
             checkpoint_path=eeg_checkpoint,
             config=config,
             batch_size=int(eeg_cfg.get("inference_batch_size", 64)),
+            progress_config=config,
         )
         probabilities = np.asarray(prediction["probability"], dtype=float)
         labels = np.asarray(data.binary_labels, dtype=int)

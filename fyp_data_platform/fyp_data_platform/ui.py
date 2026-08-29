@@ -4,6 +4,7 @@ import csv
 import mimetypes
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import asdict
 from io import StringIO
@@ -609,19 +610,37 @@ def create_app(config_path: str | None = None) -> Any:
         if not run_lock.acquire(blocking=False):
             return jsonify({"error": "Another model run is already active."}), 409
         job_id = str(uuid.uuid4())
+        job_started = time.monotonic()
         with jobs_lock:
-            jobs[job_id] = {"id": job_id, "status": "running", "dataset_id": dataset_id, "recording_id": recording_id, "mode": mode}
+            jobs[job_id] = {
+                "id": job_id, "status": "running", "dataset_id": dataset_id,
+                "recording_id": recording_id, "mode": mode,
+                "progress": {"stage": "queued", "stage_label": "Starting model run", "percent": 0.0, "elapsed_sec": 0.0},
+            }
+
+        def update_progress(payload: dict[str, Any]) -> None:
+            with jobs_lock:
+                current = jobs.get(job_id)
+                if current and current.get("status") == "running":
+                    current["progress"] = {**payload, "elapsed_sec": time.monotonic() - job_started}
 
         def worker() -> None:
             try:
                 result = SeizureModelIntegration(settings, storage, session_factory).run(
-                    dataset_id, recording_id, mode=mode, require_labels=require_labels
+                    dataset_id, recording_id, mode=mode, require_labels=require_labels,
+                    progress_callback=update_progress,
                 )
                 with jobs_lock:
-                    jobs[job_id] = {"id": job_id, "status": result.status, "result": asdict(result)}
+                    jobs[job_id] = {
+                        "id": job_id, "status": result.status, "result": asdict(result),
+                        "progress": {"stage": "completed", "stage_label": "Run completed", "percent": 100.0, "elapsed_sec": time.monotonic() - job_started},
+                    }
             except Exception as error:
                 with jobs_lock:
-                    jobs[job_id] = {"id": job_id, "status": "failed", "error": str(error)}
+                    jobs[job_id] = {
+                        "id": job_id, "status": "failed", "error": str(error),
+                        "progress": {"stage": "failed", "stage_label": "Run failed", "percent": 0.0, "elapsed_sec": time.monotonic() - job_started},
+                    }
             finally:
                 run_lock.release()
 

@@ -61,12 +61,19 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
         (result_dir / "metrics.json").write_text(json.dumps({"sensitivity": 0.8}), encoding="utf-8")
 
     monkeypatch.setattr("fyp_data_platform.integrations.seizure_model.subprocess.run", fake_run)
-    result = SeizureModelIntegration(settings, storage, factory).run("test", "r1", mode="video")
+    progress = []
+    result = SeizureModelIntegration(settings, storage, factory).run(
+        "test", "r1", mode="video", progress_callback=progress.append
+    )
 
     assert result.status == "completed"
     assert result.runtime["timings"]["total_sec"] >= 0
     assert result.runtime["timings"]["model_pipeline_sec"] >= 0
     assert result.artifacts[0]["relative_path"] == "video_only/metrics.json"
+    assert [item["stage"] for item in progress] == [
+        "input_staging", "input_staging", "configuration", "configuration",
+        "model_loading", "artifact_persistence", "artifact_persistence",
+    ]
     with factory() as session:
         run = session.get(ModelRun, result.run_id)
         outputs = session.scalars(select(StoredFile).where(StoredFile.role == "model-output")).all()

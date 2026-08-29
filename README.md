@@ -219,6 +219,11 @@ database, uploaded videos and stored results.
 4. Wait for inference to finish. Only one inference run is allowed at a time.
 5. Open **Model runs** to view probabilities, events, metrics and artifacts.
 
+While a run is active, the Recordings page shows the current pipeline stage,
+processed video clips or EEG batches, percentage, elapsed time and an approximate
+remaining time. Progress uses the existing job polling endpoint and requires no
+additional service or different Docker command.
+
 ### Prediction-only video
 
 Upload one or more videos without a workbook, then choose **Predict** on the
@@ -230,6 +235,9 @@ ground-truth accuracy metrics.
 Upload exactly one video and optionally attach an `.xlsx` label workbook. Enter
 the Patient ID, Seizure ID and Seizure Type that identify exactly one workbook
 row. For the supplied VSViG workbook these look like `Pat01`, `Sz2` and `PG`.
+
+On the Upload page, first enable **Compare video with ground truth**. The workbook
+selector and matching identity fields remain hidden when comparison is disabled.
 
 The platform validates the match before storage. On the Recordings page choose
 **Evaluate** to run with ground truth. The result reports confusion counts,

@@ -23,21 +23,22 @@ export default function UploadPage() {
   const videoInput = useRef(null); const eegInput = useRef(null); const labelInput = useRef(null);
   const [mode, setMode] = useState('video');
   const [video, setVideo] = useState(null); const [eeg, setEeg] = useState(null); const [labelFile, setLabelFile] = useState(null);
+  const [compareLabels, setCompareLabels] = useState(false);
   const [fields, setFields] = useState({ dataset_id: 'ui-recordings', dataset_name: 'UI uploaded recordings', patient_id: 'local-patient-001', recording_id: '', seizure_id: '', seizure_type: '' });
   const [state, setState] = useState({ busy: false, error: null, uploaded: null });
   const needsVideo = mode !== 'eeg'; const needsEeg = mode !== 'video';
-  const labelReady = !labelFile || (needsVideo && fields.patient_id && fields.seizure_id && fields.seizure_type);
+  const labelReady = !needsVideo || !compareLabels || (labelFile && fields.patient_id && fields.seizure_id && fields.seizure_type);
   const ready = (!needsVideo || video) && (!needsEeg || eeg) && labelReady && (mode !== 'unimodal' || fields.recording_id);
   const submit = async () => {
     setState({ busy: true, error: null, uploaded: null });
-    try { setState({ busy: false, error: null, uploaded: await api.upload(mode, video ? [video] : [], eeg, fields, labelFile) }); }
+    try { setState({ busy: false, error: null, uploaded: await api.upload(mode, video ? [video] : [], eeg, fields, compareLabels ? labelFile : null) }); }
     catch (error) { setState({ busy: false, error, uploaded: null }); }
   };
   return <div className="page narrow">
     <div className="page-title"><div><p>Data registration</p><h1>Upload recordings</h1><span>Choose which independent model workflows to prepare.</span></div></div>
     {state.error && <Notice tone="danger" title="Upload failed"><p>{state.error.message}</p></Notice>}
     {state.uploaded && <Notice title="Upload complete"><p>{state.uploaded.uploaded.length} input file{state.uploaded.uploaded.length === 1 ? '' : 's'} stored and registered successfully.</p></Notice>}
-    <div className="mode-picker">{modes.map(({ id, title, detail, icon: Icon }) => <button type="button" className={mode === id ? 'selected' : ''} key={id} onClick={() => setMode(id)}><Icon /><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>
+    <div className="mode-picker">{modes.map(({ id, title, detail, icon: Icon }) => <button type="button" className={mode === id ? 'selected' : ''} key={id} onClick={() => { setMode(id); if (id === 'eeg') { setCompareLabels(false); setLabelFile(null); } }}><Icon /><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>
     {mode === 'unimodal' && <Notice title="Independent results"><p>Both models will run on the same catalog entry, but their predictions will not be combined or presented as fusion.</p></Notice>}
     <div className="upload-inputs">
       {needsVideo && <FileChoice title="Video file" detail="MP4, AVI, MKV or MOV" accept=".mp4,.avi,.mkv,.mov" file={video} inputRef={videoInput} onChoose={setVideo} onRemove={() => setVideo(null)} icon={FileVideo} />}
@@ -46,8 +47,8 @@ export default function UploadPage() {
     <Card title="Catalog identity">
       <div className="form-grid">{[['dataset_id', 'Dataset ID'], ['dataset_name', 'Dataset name'], ['patient_id', 'Patient ID'], ['recording_id', `Recording ID${mode === 'unimodal' ? '' : ' (optional)'}`]].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div>
       {mode === 'unimodal' && <Notice><p>Recording ID is required so the video and EEG files are registered under one entry.</p></Notice>}
-      {needsVideo && <div className="label-upload"><div><strong>Video ground-truth labels</strong><span>Optional - Label.xlsx</span></div><input ref={labelInput} type="file" hidden accept=".xlsx" onChange={(event) => setLabelFile(event.target.files[0] || null)} /><button className="button" type="button" onClick={() => labelInput.current.click()}>{labelFile ? 'Replace workbook' : 'Choose workbook'}</button></div>}
-      {needsVideo && labelFile && <><div className="selected-label"><CheckCircle2 /><div><strong>{labelFile.name}</strong><span>{formatBytes(labelFile.size)}</span></div><button onClick={() => setLabelFile(null)}><X /></button></div><div className="form-grid label-identity">{[['seizure_id', 'Seizure ID'], ['seizure_type', 'Seizure type']].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div></>}
+      {needsVideo && <div className={`comparison-option ${compareLabels ? 'enabled' : ''}`}><div><strong>Compare video with ground truth</strong><span>Enable this only when you have a matching Label.xlsx workbook.</span></div><label className="switch"><input type="checkbox" checked={compareLabels} onChange={(event) => { setCompareLabels(event.target.checked); if (!event.target.checked) setLabelFile(null); }} /><i /></label></div>}
+      {needsVideo && compareLabels && <div className="comparison-panel"><Notice title="Workbook matching"><p>Patient ID, Seizure ID and Seizure type must match exactly one row in Label.xlsx.</p></Notice><div className="label-upload"><div><strong>Ground-truth workbook</strong><span>Required - .xlsx format</span></div><input ref={labelInput} type="file" hidden accept=".xlsx" onChange={(event) => setLabelFile(event.target.files[0] || null)} /><button className="button" type="button" onClick={() => labelInput.current.click()}>{labelFile ? 'Replace workbook' : 'Choose workbook'}</button></div>{labelFile && <div className="selected-label"><CheckCircle2 /><div><strong>{labelFile.name}</strong><span>{formatBytes(labelFile.size)}</span></div><button onClick={() => setLabelFile(null)}><X /></button></div>}<div className="form-grid label-identity">{[['seizure_id', 'Seizure ID, e.g. Sz2'], ['seizure_type', 'Seizure type, e.g. PG']].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div></div>}
       <button className="button primary full" disabled={!ready || state.busy} onClick={submit}>{state.busy ? 'Uploading...' : <><CheckCircle2 size={17} /> Store and register</>}</button>
     </Card>
   </div>;

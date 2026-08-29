@@ -4,12 +4,13 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from sqlalchemy import select
@@ -56,9 +57,13 @@ class SeizureModelIntegration:
         eeg_key: str | None = None,
         require_labels: bool = False,
         cleanup: bool = False,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelRunResult:
         total_started = time.perf_counter()
         timings: dict[str, float] = {}
+        def progress(stage: str, label: str, percent: float, **extra: Any) -> None:
+            if progress_callback:
+                progress_callback({"stage": stage, "stage_label": label, "percent": percent, **extra})
         if mode not in {"video", "eeg", "unimodal", "strict_multimodal"}:
             raise ValueError("Managed runs support video, eeg, unimodal, or strict_multimodal.")
         project = self.settings.model_project_path.resolve()
@@ -71,6 +76,7 @@ class SeizureModelIntegration:
         output_root = run_root / "results"
         input_root.mkdir(parents=True, exist_ok=True)
 
+        progress("input_staging", "Preparing input files", 0.0)
         stage_started = time.perf_counter()
         resolved_rows = {
             name: self._resolve_file(dataset_id, recording_id, name)
@@ -102,7 +108,9 @@ class SeizureModelIntegration:
                 self.storage.download_file(key, destination)
                 staged[name] = destination.resolve()
         timings["input_staging_sec"] = time.perf_counter() - stage_started
+        progress("input_staging", "Preparing input files", 100.0)
 
+        progress("configuration", "Preparing model configuration", 0.0)
         stage_started = time.perf_counter()
         label_identity = (
             (resolved_rows["labels"].metadata_json or {}).get("label_identity")
@@ -111,6 +119,8 @@ class SeizureModelIntegration:
         config = self._build_config(
             project, output_root.resolve(), staged, label_identity=label_identity
         )
+        progress_path = run_root / "progress.json"
+        config.setdefault("testing", {})["progress_file"] = str(progress_path.resolve())
         config_path = run_root / "inference.yaml"
         config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         python = str(self.settings.model_python or Path(sys.executable))
@@ -119,6 +129,7 @@ class SeizureModelIntegration:
             "--config", str(config_path.resolve()), "--root", str(project), "--device", "auto",
         ]
         timings["configuration_sec"] = time.perf_counter() - stage_started
+        progress("configuration", "Preparing model configuration", 100.0)
         run_compute = compute_info()
         self._create_run(
             run_id,
@@ -132,12 +143,37 @@ class SeizureModelIntegration:
         )
         try:
             stage_started = time.perf_counter()
-            subprocess.run(command, cwd=project, check=True)
+            progress("model_loading", "Loading model and input metadata", 0.0)
+            monitor_stop = threading.Event()
+
+            def monitor_progress() -> None:
+                last_payload = ""
+                while not monitor_stop.wait(0.5):
+                    try:
+                        payload_text = progress_path.read_text(encoding="utf-8")
+                        if payload_text == last_payload:
+                            continue
+                        payload = json.loads(payload_text)
+                        if isinstance(payload, dict) and progress_callback:
+                            progress_callback(payload)
+                        last_payload = payload_text
+                    except (FileNotFoundError, json.JSONDecodeError, OSError):
+                        continue
+
+            monitor = threading.Thread(target=monitor_progress, name=f"progress-{run_id}", daemon=True)
+            monitor.start()
+            try:
+                subprocess.run(command, cwd=project, check=True)
+            finally:
+                monitor_stop.set()
+                monitor.join(timeout=2)
             timings["model_pipeline_sec"] = time.perf_counter() - stage_started
+            progress("artifact_persistence", "Saving results and metrics", 0.0)
             stage_started = time.perf_counter()
             artifacts = self._upload_outputs(dataset_id, recording_id, run_id, output_root)
             metrics = self._collect_metrics(output_root)
             timings["artifact_persistence_sec"] = time.perf_counter() - stage_started
+            progress("artifact_persistence", "Saving results and metrics", 100.0)
             workflow_statuses = {
                 value.get("status")
                 for value in metrics.values()
