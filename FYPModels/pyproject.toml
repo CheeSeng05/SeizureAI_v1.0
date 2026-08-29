@@ -24,12 +24,19 @@ video = [
   "timm>=0.9",
   "opencv-python-headless>=4.8",
 ]
+facial = [
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "opencv-python-headless>=4.8",
+  "mediapipe==0.10.21",
+]
 eeg = ["tensorflow>=2.15"]
 all = [
   "torch>=2.1",
   "torchvision>=0.16",
   "timm>=0.9",
   "opencv-python-headless>=4.8",
+  "mediapipe==0.10.21",
   "tensorflow>=2.15",
 ]
 

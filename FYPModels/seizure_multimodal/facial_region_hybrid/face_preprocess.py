@@ -14,23 +14,41 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-import torch
 
-FACE_LANDMARK_PAIRS = ((33, 133), (362, 263), (159, 145), (386, 374),
-                       (61, 291), (13, 14), (78, 308), (1, 152), (10, 152), (234, 454))
+
+FACE_LANDMARK_PAIRS = (
+    (33, 133),
+    (362, 263),
+    (159, 145),
+    (386, 374),
+    (61, 291),
+    (13, 14),
+    (78, 308),
+    (1, 152),
+    (10, 152),
+    (234, 454),
+)
+
 MANIFEST_FIELDS = (
-    "window_id", "dataset", "patient_id", "recording_id", "source_video",
-    "start_sec", "end_sec", "label", "split", "sampled_fps", "frame_count",
-    "pose_path", "face_path", "face_geometry_path", "face_size",
-    "pose_detection_fraction", "face_detection_fraction", "face_box_reused_fraction",
+    "window_id",
+    "dataset",
+    "patient_id",
+    "recording_id",
+    "source_video",
+    "start_sec",
+    "end_sec",
+    "label",
+    "split",
+    "sampled_fps",
+    "frame_count",
+    "pose_path",
+    "face_path",
+    "face_geometry_path",
+    "face_size",
+    "pose_detection_fraction",
+    "face_detection_fraction",
+    "face_box_reused_fraction",
 )
-
-face_window = np.load(
-    "results/facial_test/face/example.npy",
-    allow_pickle=False,
-)
-video = torch.from_numpy(face_window).float().unsqueeze(0)
-# print(video.shape)
 
 @dataclass(frozen=True)
 class PreprocessSummary:
@@ -65,53 +83,135 @@ def _write_rows(path: Path, rows: Iterable[dict[str, Any]], *, append: bool) -> 
 
 
 def _normalized_pose(result: Any) -> tuple[np.ndarray, bool]:
-    if result.pose_landmarks is None:
-        return np.zeros((33, 4), np.float32), False
-    pose = np.asarray([[p.x, p.y, p.z, p.visibility]
-                       for p in result.pose_landmarks.landmark], np.float32)
+    if not result.pose_landmarks:
+        return np.zeros((33, 4), dtype=np.float32), False
+
+    landmarks = result.pose_landmarks[0]
+
+    pose = np.asarray(
+        [
+            [
+                float(point.x or 0.0),
+                float(point.y or 0.0),
+                float(point.z or 0.0),
+                float(point.visibility or 0.0),
+            ]
+            for point in landmarks
+        ],
+        dtype=np.float32,
+    )
+
     if pose.shape != (33, 4):
-        return np.zeros((33, 4), np.float32), False
+        return np.zeros((33, 4), dtype=np.float32), False
+
     center = (pose[23, :3] + pose[24, :3]) / 2
-    scale = float(np.linalg.norm(pose[11, :3] - pose[12, :3]))
+    scale = float(
+        np.linalg.norm(pose[11, :3] - pose[12, :3])
+    )
+
     if scale > 1e-6:
         pose[:, :3] = (pose[:, :3] - center) / scale
+
     return pose, True
 
 
-def _face_geometry(result: Any) -> tuple[np.ndarray, bool]:
-    empty = np.zeros(len(FACE_LANDMARK_PAIRS) * 2, np.float32)
-    if not result.multi_face_landmarks:
+def _face_geometry(
+    result: Any,
+) -> tuple[np.ndarray, bool]:
+    empty = np.zeros(
+        len(FACE_LANDMARK_PAIRS) * 2,
+        dtype=np.float32,
+    )
+
+    if not result.face_landmarks:
         return empty, False
-    points = np.asarray([[p.x, p.y] for p in result.multi_face_landmarks[0].landmark], np.float32)
-    if len(points) <= max(max(pair) for pair in FACE_LANDMARK_PAIRS):
+
+    landmarks = result.face_landmarks[0]
+
+    points = np.asarray(
+        [
+            [float(point.x), float(point.y)]
+            for point in landmarks
+        ],
+        dtype=np.float32,
+    )
+
+    required_index = max(
+        max(pair) for pair in FACE_LANDMARK_PAIRS
+    )
+
+    if len(points) <= required_index:
         return empty, False
-    scale = float(np.linalg.norm(points[33] - points[263]))
+
+    scale = float(
+        np.linalg.norm(points[33] - points[263])
+    )
+
     if scale <= 1e-6:
         return empty, False
-    geometry = np.asarray([(points[a] - points[b]) / scale
-                           for a, b in FACE_LANDMARK_PAIRS], np.float32).reshape(-1)
+
+    geometry = np.asarray(
+        [
+            (points[first] - points[second]) / scale
+            for first, second in FACE_LANDMARK_PAIRS
+        ],
+        dtype=np.float32,
+    ).reshape(-1)
+
     return geometry, True
 
 
 def _face_box(
-    result: Any, frame_width: int, frame_height: int, margin: float
+    result: Any,
+    frame_width: int,
+    frame_height: int,
+    margin: float,
 ) -> np.ndarray | None:
-    """Return a clipped square face box as floating-point ``[x1,y1,x2,y2]``."""
-    if not result.multi_face_landmarks:
+    if not result.face_landmarks:
         return None
+
+    landmarks = result.face_landmarks[0]
+
     points = np.asarray(
-        [[p.x * frame_width, p.y * frame_height]
-         for p in result.multi_face_landmarks[0].landmark],
+        [
+            [
+                float(point.x) * frame_width,
+                float(point.y) * frame_height,
+            ]
+            for point in landmarks
+        ],
         dtype=np.float32,
     )
-    if points.ndim != 2 or points.shape[1] != 2 or not np.isfinite(points).all():
+
+    if (
+        points.ndim != 2
+        or points.shape[1] != 2
+        or not np.isfinite(points).all()
+    ):
         return None
-    center = (points.min(axis=0) + points.max(axis=0)) / 2
-    side = float(np.max(points.max(axis=0) - points.min(axis=0))) * (1 + 2 * margin)
-    side = min(max(side, 2.0), float(min(frame_width, frame_height)))
-    x1 = float(np.clip(center[0] - side / 2, 0, frame_width - side))
-    y1 = float(np.clip(center[1] - side / 2, 0, frame_height - side))
-    return np.asarray([x1, y1, x1 + side, y1 + side], dtype=np.float32)
+
+    minimum = points.min(axis=0)
+    maximum = points.max(axis=0)
+    center = (minimum + maximum) / 2
+
+    side = float(np.max(maximum - minimum))
+    side *= 1 + 2 * margin
+    side = min(
+        max(side, 2.0),
+        float(min(frame_width, frame_height)),
+    )
+
+    x1 = float(
+        np.clip(center[0] - side / 2, 0, frame_width - side)
+    )
+    y1 = float(
+        np.clip(center[1] - side / 2, 0, frame_height - side)
+    )
+
+    return np.asarray(
+        [x1, y1, x1 + side, y1 + side],
+        dtype=np.float32,
+    )
 
 
 def _smooth_box(previous: np.ndarray | None, current: np.ndarray, alpha: float) -> np.ndarray:
@@ -160,6 +260,8 @@ def extract_video(
     fps: float = 5.0,
     window_seconds: float = 8.0,
     *,
+    pose_model_path: str | Path,
+    face_model_path: str | Path,
     stride_seconds: float | None = None,
     patient_id: str | None = None,
     label: int | str = 0,
@@ -173,17 +275,34 @@ def extract_video(
     max_box_reuse_frames: int = 5,
 ) -> PreprocessSummary:
     """Extract model-ready face crops and landmarks; discard partial windows."""
+    pose_model_path = Path(pose_model_path).resolve()
+    face_model_path = Path(face_model_path).resolve()
+
+    if not pose_model_path.is_file():
+        raise FileNotFoundError(
+            f"Pose task model not found: {pose_model_path}"
+        )
+
+    if not face_model_path.is_file():
+        raise FileNotFoundError(
+            f"Face task model not found: {face_model_path}"
+        )
+    
     if fps <= 0 or window_seconds <= 0:
         raise ValueError("fps and window_seconds must be positive")
+    
     stride_seconds = window_seconds / 2 if stride_seconds is None else stride_seconds
     if stride_seconds <= 0:
         raise ValueError("stride_seconds must be positive")
+    
     if face_size <= 0:
         raise ValueError("face_size must be positive")
     if face_margin < 0 or not 0 <= box_smoothing < 1 or max_box_reuse_frames < 0:
         raise ValueError("Invalid face margin, box smoothing, or box reuse setting")
+    
     if not sample_id or "__" in sample_id:
         raise ValueError("sample_id must be non-empty and cannot contain '__'")
+    
     try:
         import cv2
         import mediapipe as mp
@@ -193,6 +312,7 @@ def extract_video(
     source = Path(video_path).resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Video not found: {source}")
+    
     destination = Path(output).resolve()
     pose_dir, face_dir = destination / "pose", destination / "face"
     geometry_dir = destination / "face_geometry"
@@ -200,6 +320,7 @@ def extract_video(
     face_dir.mkdir(parents=True, exist_ok=True)
     geometry_dir.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(source))
+
     if not capture.isOpened():
         raise OSError(f"Video cannot be opened: {source}")
     source_fps = float(capture.get(cv2.CAP_PROP_FPS))
@@ -209,18 +330,54 @@ def extract_video(
 
     poses: list[np.ndarray] = []
     faces: list[np.ndarray] = []
+
     face_geometries: list[np.ndarray] = []
+
     pose_hits: list[bool] = []
     face_hits: list[bool] = []
+
     face_box_reused: list[bool] = []
     times: list[float] = []
+
     next_sample, frame_index = 0.0, 0
-    pose_api = mp.solutions.pose.Pose(static_image_mode=False, model_complexity=1)
-    face_api = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=False, max_num_faces=1, refine_landmarks=True)
+    vision = mp.tasks.vision
+    base_options = mp.tasks.BaseOptions
+
+    pose_options = vision.PoseLandmarkerOptions(
+        base_options=base_options(
+            model_asset_path=str(pose_model_path),
+        ),
+        running_mode=vision.RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+    face_options = vision.FaceLandmarkerOptions(
+        base_options=base_options(
+            model_asset_path=str(face_model_path),
+        ),
+        running_mode=vision.RunningMode.VIDEO,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+        min_face_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+    )
+
+    pose_api = vision.PoseLandmarker.create_from_options(
+        pose_options
+    )
+    face_api = vision.FaceLandmarker.create_from_options(
+        face_options
+    )
+
     smoothed_box: np.ndarray | None = None
     previous_face_gray: np.ndarray | None = None
     missed_face_frames = 0
+
     try:
         while True:
             ok, bgr = capture.read()
@@ -230,13 +387,34 @@ def extract_video(
             frame_index += 1
             if time_sec + 1e-9 < next_sample:
                 continue
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            pose, has_pose = _normalized_pose(pose_api.process(rgb))
-            face_result = face_api.process(rgb)
+
+            rgb = np.ascontiguousarray(rgb)
+
+            media_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=rgb,
+            )
+
+            timestamp_ms = int(round(time_sec * 1000))
+
+            pose_result = pose_api.detect_for_video(
+                media_image,
+                timestamp_ms,
+            )
+
+            face_result = face_api.detect_for_video(
+                media_image,
+                timestamp_ms,
+            )
+
+            pose, has_pose = _normalized_pose(pose_result)
+            
             geometry, has_face = _face_geometry(face_result)
+
             detected_box = _face_box(
                 face_result, bgr.shape[1], bgr.shape[0], face_margin
             )
+
             reused = False
             if detected_box is not None:
                 smoothed_box = _smooth_box(smoothed_box, detected_box, box_smoothing)
@@ -262,11 +440,14 @@ def extract_video(
     stride = max(1, round(fps * stride_seconds))
     patient = patient_id or sample_id.split("_", 1)[0]
     assigned_split = split or _patient_split(patient, split_seed)
+
     if assigned_split not in {"train", "validation", "test", "unassigned"}:
         raise ValueError(f"Invalid split: {assigned_split!r}")
+    
     pose_array, face_array = np.asarray(poses, np.float32), np.asarray(faces, np.float32)
     geometry_array = np.asarray(face_geometries, np.float32)
     rows: list[dict[str, Any]] = []
+
     for start in _window_starts(len(poses), length, stride):
         stop, start_sec = start + length, times[start]
         end_sec = start_sec + window_seconds
@@ -305,17 +486,40 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--window-seconds", type=float, default=8.0)
     parser.add_argument("--stride-seconds", type=float)
+
     parser.add_argument("--face-size", type=int, default=224)
     parser.add_argument("--face-margin", type=float, default=.25)
+
     parser.add_argument("--box-smoothing", type=float, default=.7)
     parser.add_argument("--max-box-reuse-frames", type=int, default=5)
+
+    parser.add_argument(
+        "--pose-model",
+        default=(
+            "checkpoints/pretrained/mediapipe/"
+            "pose_landmarker_lite.task"
+        ),
+    )
+
+    parser.add_argument(
+        "--face-model",
+        default=(
+            "checkpoints/pretrained/mediapipe/"
+            "face_landmarker.task"
+        ),
+    )
+
     args = parser.parse_args()
     extract_video(args.video, args.output, args.sample_id or Path(args.video).stem,
-                  args.fps, args.window_seconds, stride_seconds=args.stride_seconds,
+                  args.fps, args.window_seconds, 
+                  pose_model_path=args.pose_model,
+                  face_model_path=args.face_model,
+                  stride_seconds=args.stride_seconds,
                   patient_id=args.patient_id, label=args.label, dataset=args.dataset, split=args.split,
                   face_size=args.face_size, face_margin=args.face_margin,
                   box_smoothing=args.box_smoothing,
                   max_box_reuse_frames=args.max_box_reuse_frames)
+    
 
 
 if __name__ == "__main__":
