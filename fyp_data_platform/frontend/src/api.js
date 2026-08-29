@@ -21,16 +21,19 @@ export const api = {
   health: () => request('/api/health'),
   catalog: () => request('/api/catalog'),
   run: (id) => request(`/api/runs/${id}`),
-  startRun: (datasetId, recordingId, requireLabels = false) => request('/api/runs', {
+  startRun: (datasetId, recordingId, mode = 'video', requireLabels = false) => request('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dataset_id: datasetId, recording_id: recordingId, require_labels: requireLabels }),
+    body: JSON.stringify({ dataset_id: datasetId, recording_id: recordingId, mode, require_labels: requireLabels }),
   }),
   job: (id) => request(`/api/jobs/${id}`),
-  upload: (files, fields) => {
+  upload: (mode, files, eeg, fields, labels = null) => {
     const form = new FormData();
+    form.append('mode', mode);
     files.forEach((file) => form.append('videos', file));
+    if (eeg) form.append('eeg', eeg);
     Object.entries(fields).forEach(([key, value]) => form.append(key, value));
+    if (labels) form.append('labels', labels);
     return request('/api/uploads', { method: 'POST', body: form });
   },
 };

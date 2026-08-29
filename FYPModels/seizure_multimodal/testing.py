@@ -186,6 +186,8 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
     labels = np.asarray([row["reference_label"] for row in valid_rows], dtype=int)
     probabilities = np.asarray([row["video_probability"] for row in valid_rows], dtype=float)
     metrics = _classification_metrics(labels, probabilities)
+    metrics["evaluated_windows"] = len(valid_rows)
+    metrics["excluded_windows"] = len(rows) - len(valid_rows)
     metrics["annotation_alignment_status"] = annotation["alignment_status"]
     metrics["classification_label_policy"] = (
         "VSViG source policy: 0 through EEG onset, transition interval excluded, "

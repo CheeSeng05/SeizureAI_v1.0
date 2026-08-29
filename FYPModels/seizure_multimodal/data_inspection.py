@@ -225,7 +225,9 @@ def inspect_label_workbook(path: str | Path) -> dict[str, Any]:
                 "records": serializable_records,
             }
         )
-    return {"path": str(workbook_path), "sheet_names": workbook.sheetnames, "sheets": sheets}
+    sheet_names = list(workbook.sheetnames)
+    workbook.close()
+    return {"path": str(workbook_path), "sheet_names": sheet_names, "sheets": sheets}
 
 
 def resolved_label_records(path: str | Path) -> list[dict[str, Any]]:

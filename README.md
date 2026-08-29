@@ -1,7 +1,7 @@
 # SeizureAI v1.0
 
-SeizureAI is a local research platform for running video-based seizure inference.
-It provides one browser dashboard for uploading videos, cataloguing recordings,
+SeizureAI is a local research platform for running video and EEG seizure inference.
+It provides one browser dashboard for uploading recordings, cataloguing inputs,
 starting the authoritative model pipeline, and reviewing stored results.
 
 This is a research prototype. It is not a medical device and must not be used
@@ -16,7 +16,7 @@ Browser dashboard (React)
 Web API and orchestration (Flask)
           |
           +---- PostgreSQL: datasets, patients, recordings, model runs
-          +---- MinIO: videos, prediction files, plots, metrics
+          +---- MinIO: video/EEG inputs, prediction files, plots, metrics
           +---- FYPModels: authoritative seizure inference pipeline
 ```
 
@@ -78,7 +78,8 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
-The first build can take a while. When `app` is healthy, open
+The first build can take a while because it installs both the video/PyTorch and
+EEG/TensorFlow model dependencies. When `app` is healthy, open
 http://localhost:8080. Database migrations and bucket creation are automatic.
 
 ### Windows with an NVIDIA GPU
@@ -213,13 +214,64 @@ database, uploaded videos and stored results.
 ## Basic use
 
 1. Open the dashboard.
-2. Choose **Upload** and register videos.
-3. Open **Recordings** and select **Run**.
+2. Choose **Upload**, select Video, EEG, or **Both independently**, and register the required files.
+3. Open **Recordings** and select the matching Video, EEG, or Both run button.
 4. Wait for inference to finish. Only one inference run is allowed at a time.
 5. Open **Model runs** to view probabilities, events, metrics and artifacts.
 
-An upload without a registered label workbook is prediction-only. Accuracy
-metrics require matching labels registered under the same dataset and recording.
+### Prediction-only video
+
+Upload one or more videos without a workbook, then choose **Predict** on the
+Recordings page. The result contains probabilities and detected events but no
+ground-truth accuracy metrics.
+
+### Label-backed video evaluation
+
+Upload exactly one video and optionally attach an `.xlsx` label workbook. Enter
+the Patient ID, Seizure ID and Seizure Type that identify exactly one workbook
+row. For the supplied VSViG workbook these look like `Pat01`, `Sz2` and `PG`.
+
+The platform validates the match before storage. On the Recordings page choose
+**Evaluate** to run with ground truth. The result reports confusion counts,
+accuracy, balanced accuracy, sensitivity/recall, specificity, precision, F1,
+AUROC, evaluated/excluded windows, false-positive alarms per hour and onset
+error when those quantities are supported by the labels.
+
+The supplied `Label.xlsx` contains EEG and clinical onset but no seizure end.
+The transition between those onsets is excluded from classification, and offset
+accuracy remains unavailable; the platform does not invent a missing end time.
+
+### EEG evaluation
+
+Choose **EEG** and upload one CSV. The file must contain the exact feature
+columns `X1` through `X178` and a ground-truth `y` column. The configured label
+mapping treats `1` as ictal and `2` through `5` as non-ictal. The server validates
+the structure and numeric values before storing the file. Start an **EEG** run
+from Recordings to calculate the EEG predictions and classification metrics.
+
+### Video and EEG independently
+
+Choose **Both independently**, provide one video, one EEG CSV, and a Recording
+ID. Both files are registered under the same catalog entry. Selecting **Both
+independently** on Recordings runs the existing video and EEG models separately
+and displays separate result sections. It does not fuse their predictions and
+does not claim that unrelated inputs are synchronized.
+
+The Docker startup commands are unchanged. Both model dependency sets are in
+the same CPU or CUDA application image. The CUDA setup accelerates the PyTorch
+video workflow when available; the System page and each stored run report the
+device actually detected.
+
+### CPU and CUDA runtime comparison
+
+Every new run stores its actual processing device and elapsed time for input
+staging, configuration, the model pipeline, artifact persistence and the total
+orchestration run. The Model runs page shows total time and CPU/CUDA mode. Open a
+result for the detailed phase timings.
+
+For a fair CPU/CUDA benchmark, run the same stored recording in each mode with
+the same checkpoint and configuration. Existing historical runs created before
+runtime tracking show an unavailable duration.
 
 ## Development and tests
 

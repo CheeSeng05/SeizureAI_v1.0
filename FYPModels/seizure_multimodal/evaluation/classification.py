@@ -74,6 +74,11 @@ def binary_classification_metrics(
     precision = _safe_ratio(tp, tp + fp)
     sensitivity = _safe_ratio(tp, tp + fn)
     specificity = _safe_ratio(tn, tn + fp)
+    accuracy = _safe_ratio(tp + tn, tp + tn + fp + fn)
+    balanced_accuracy = (
+        None if sensitivity is None or specificity is None
+        else (sensitivity + specificity) / 2
+    )
     f1 = (
         None
         if precision is None or sensitivity is None or precision + sensitivity == 0
@@ -83,12 +88,15 @@ def binary_classification_metrics(
         **confusion,
         "evaluation_unit": "window",
         "threshold": threshold,
+        "accuracy": accuracy,
+        "balanced_accuracy": balanced_accuracy,
         "sensitivity": sensitivity,
         "specificity": specificity,
         "precision": precision,
         "recall": sensitivity,
         "f1": f1,
         "auroc": binary_auroc(y_true, y_probability),
+        "evaluated_samples": int(tp + tn + fp + fn),
     }
 
 

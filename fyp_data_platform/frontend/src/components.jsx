@@ -38,4 +38,12 @@ export const formatBytes = (bytes) => {
 
 export const formatDate = (value) => value ? new Date(value).toLocaleString() : '—';
 export const formatTime = (seconds) => seconds == null ? '—' : `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+export const formatDuration = (seconds) => {
+  if (seconds == null) return '—';
+  if (seconds < 60) return `${Number(seconds).toFixed(2)}s`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remaining = Math.floor(seconds % 60);
+  return hours ? `${hours}h ${minutes}m ${remaining}s` : `${minutes}m ${remaining}s`;
+};
 export const percent = (value) => value == null ? '—' : `${(Number(value) * 100).toFixed(1)}%`;

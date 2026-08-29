@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
+from seizure_multimodal.data_inspection import resolved_label_records
 
 from fyp_data_platform.config.settings import PROJECT_ROOT, Settings, load_settings
 from fyp_data_platform.compute import compute_info
@@ -26,6 +27,8 @@ from fyp_data_platform.storage.keys import safe_entity, source_key
 
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
+ALLOWED_EEG_EXTENSIONS = {".csv"}
+ALLOWED_LABEL_EXTENSIONS = {".xlsx"}
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
 
@@ -47,8 +50,8 @@ def _register_video(
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_VIDEO_EXTENSIONS:
         raise ValueError(f"Unsupported video file extension: {suffix}")
-    dataset_id = safe_entity(dataset_id or "ui-videos")
-    dataset_name = dataset_name or "UI uploaded videos"
+    dataset_id = safe_entity(dataset_id or "ui-recordings")
+    dataset_name = dataset_name or "UI uploaded recordings"
     patient_id = safe_entity(patient_id or "local-patient-001")
     source_recording_id = _recording_source_id(recording_id, Path(filename).stem, file_count)
     relative = f"manual/{patient_id}/{source_recording_id}/{filename}"
@@ -82,6 +85,159 @@ def _register_video(
         "patient_id": patient_id, "recording_id": source_recording_id,
         "filename": filename, "storage_key": key,
         "sha256": metadata.sha256, "size_bytes": metadata.size_bytes,
+    }
+
+
+def _validate_eeg_upload(upload: FileStorage) -> dict[str, Any]:
+    filename = secure_filename(upload.filename or "")
+    if Path(filename).suffix.lower() not in ALLOWED_EEG_EXTENSIONS:
+        raise ValueError("EEG data must be a .csv file.")
+    rows = 0
+    labels: set[int] = set()
+    try:
+        text = upload.stream.read().decode("utf-8-sig")
+        reader = csv.DictReader(StringIO(text))
+        expected = [f"X{index}" for index in range(1, 179)]
+        columns = reader.fieldnames or []
+        feature_columns = sorted(
+            (column for column in columns if column.startswith("X") and column[1:].isdigit()),
+            key=lambda column: int(column[1:]),
+        )
+        if feature_columns != expected:
+            raise ValueError("EEG CSV must contain the exact feature columns X1 through X178.")
+        if "y" not in columns:
+            raise ValueError("EEG CSV must contain the ground-truth column y.")
+        for row_number, row in enumerate(reader, start=2):
+            for column in expected:
+                float(row[column])
+            label = int(row["y"])
+            if label not in {1, 2, 3, 4, 5}:
+                raise ValueError(f"EEG label on row {row_number} must be between 1 and 5.")
+            labels.add(label)
+            rows += 1
+    except UnicodeDecodeError as error:
+        raise ValueError("EEG CSV must use UTF-8 text encoding.") from error
+    except (TypeError, ValueError, KeyError) as error:
+        if isinstance(error, ValueError) and str(error).startswith("EEG"):
+            raise
+        raise ValueError(f"EEG CSV contains invalid numeric data: {error}") from error
+    finally:
+        upload.stream.seek(0)
+    if rows == 0:
+        raise ValueError("EEG CSV does not contain any data rows.")
+    return {"row_count": rows, "labels": sorted(labels), "feature_count": 178}
+
+
+def _register_eeg(
+    *, settings: Settings, storage: Any, session_factory: Any, upload: FileStorage,
+    dataset_id: str, dataset_name: str, patient_id: str, recording_id: str,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    filename = secure_filename(upload.filename or "")
+    dataset_id = safe_entity(dataset_id or "ui-recordings")
+    dataset_name = dataset_name or "UI uploaded recordings"
+    patient_id = safe_entity(patient_id or "local-patient-001")
+    source_recording_id = safe_entity(recording_id or Path(filename).stem)
+    relative = f"manual/{patient_id}/{source_recording_id}/{filename}"
+    key = source_key(dataset_id, relative)
+    with tempfile.TemporaryDirectory(prefix="fyp-ui-eeg-upload-") as directory:
+        temporary = Path(directory) / filename
+        upload.save(temporary)
+        metadata = storage.put_file(temporary, key, sha256=sha256_file(temporary))
+    with session_factory.begin() as session:
+        repo = CatalogRepository(session)
+        repo.dataset(
+            dataset_id, name=dataset_name, version=None,
+            description="Locally uploaded research recordings", source_url=None,
+            license=None, metadata_json={"uploaded_via": "web"},
+        )
+        patient, _ = repo.patient(dataset_id, patient_id, metadata_json={"uploaded_via": "web"})
+        recording, _ = repo.recording(
+            dataset_id, source_recording_id, patient_id=patient.id,
+            session_id=None, task=None, modality="eeg", duration_sec=None,
+            video_fps=None, start_datetime=None, metadata_json={"uploaded_via": "web"},
+        )
+        file_row, _ = repo.stored_file(
+            dataset_id, relative, recording_id=recording.id, role="source-data",
+            modality="eeg", storage_backend=settings.storage_backend,
+            storage_key=key, payload_state="stored", size_bytes=metadata.size_bytes,
+            sha256=metadata.sha256, media_type="text/csv",
+            metadata_json={"uploaded_via": "web", "original_filename": filename, **validation},
+        )
+    return {
+        "file_id": file_row.id, "dataset_id": dataset_id, "patient_id": patient_id,
+        "recording_id": source_recording_id, "filename": filename,
+        "storage_key": key, "sha256": metadata.sha256,
+        "size_bytes": metadata.size_bytes, "validation": validation,
+    }
+
+
+def _validate_label_upload(
+    upload: FileStorage, *, patient_id: str, seizure_id: str, seizure_type: str
+) -> dict[str, Any]:
+    filename = secure_filename(upload.filename or "")
+    if Path(filename).suffix.lower() not in ALLOWED_LABEL_EXTENSIONS:
+        raise ValueError("Ground-truth labels must be an .xlsx workbook.")
+    if not all((patient_id, seizure_id, seizure_type)):
+        raise ValueError("Patient ID, seizure ID, and seizure type are required with labels.")
+    with tempfile.TemporaryDirectory(prefix="fyp-ui-label-check-") as directory:
+        temporary = Path(directory) / filename
+        upload.save(temporary)
+        records = resolved_label_records(temporary)
+    upload.stream.seek(0)
+    matches = [
+        record for record in records
+        if str(record.get("resolved_PatID") or "").strip().casefold() == patient_id.casefold()
+        and str(record.get("#Seizure") or "").strip().casefold() == seizure_id.casefold()
+        and str(record.get("resolved_Seizure Type") or "").strip().casefold() == seizure_type.casefold()
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one label row for {patient_id} / {seizure_id} / {seizure_type}; "
+            f"found {len(matches)}."
+        )
+    match = matches[0]
+    return {
+        "patient_id": patient_id,
+        "seizure_id": seizure_id,
+        "seizure_type": seizure_type,
+        "eeg_onset_sec": match.get("EEG onset seconds"),
+        "clinical_onset_sec": match.get("Clinical Onset seconds"),
+        "seizure_end_sec": next(
+            (match.get(key) for key in ("Seizure End seconds", "Seizure end seconds", "Offset seconds") if match.get(key) is not None),
+            None,
+        ),
+    }
+
+
+def _register_label(
+    *, settings: Settings, storage: Any, session_factory: Any, upload: FileStorage,
+    dataset_id: str, patient_id: str, recording_id: str, identity: dict[str, Any],
+) -> dict[str, Any]:
+    filename = secure_filename(upload.filename or "")
+    relative = f"manual/{patient_id}/{recording_id}/labels/{filename}"
+    key = source_key(dataset_id, relative)
+    with tempfile.TemporaryDirectory(prefix="fyp-ui-label-upload-") as directory:
+        temporary = Path(directory) / filename
+        upload.save(temporary)
+        metadata = storage.put_file(temporary, key, sha256=sha256_file(temporary))
+    with session_factory.begin() as session:
+        recording = session.get(Recording, f"{dataset_id}::{recording_id}")
+        if recording is None:
+            raise LookupError("The video recording was not registered before its labels.")
+        file_row, _ = CatalogRepository(session).stored_file(
+            dataset_id, relative, recording_id=recording.id,
+            role="ground-truth-labels", modality="labels",
+            storage_backend=settings.storage_backend, storage_key=key,
+            payload_state="stored", size_bytes=metadata.size_bytes,
+            sha256=metadata.sha256,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            metadata_json={"uploaded_via": "web", "original_filename": filename, "label_identity": identity},
+        )
+    return {
+        "file_id": file_row.id, "filename": filename, "storage_key": key,
+        "sha256": metadata.sha256, "size_bytes": metadata.size_bytes,
+        "identity": identity,
     }
 
 
@@ -236,6 +392,7 @@ def _run_summary(row: ModelRun) -> dict[str, Any]:
         "id": row.id, "status": row.status, "modality": row.modality,
         "dataset_id": config.get("dataset_id"), "recording_id": config.get("recording_id"),
         "compute": config.get("compute"),
+        "runtime": payload.get("runtime"),
         "require_labels": bool(config.get("require_labels")), "artifact_count": len(artifacts),
         "output_prefix": str(artifacts[0].get("key", "")).rsplit("/", 1)[0] if artifacts else None,
         "outcome": _outcome(row), "error": payload.get("error"),
@@ -251,10 +408,20 @@ def _run_result(storage: Any, row: ModelRun) -> dict[str, Any]:
     run_info = document.get("run", {}) if isinstance(document.get("run"), dict) else {}
     video_info = run_info.get("video", {}) if isinstance(run_info.get("video"), dict) else {}
     timeline = _find_artifact(row, "video_only/timeline.png", "timeline.png")
+    workflow_metrics: dict[str, Any] = {}
+    for path, value in ((row.metrics_json or {}).get("metrics") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        name = "eeg" if "eeg" in str(path).lower() else "video" if "video" in str(path).lower() else str(path)
+        workflow_metrics[name] = {
+            "status": value.get("status"), "metrics": _metric_body(value),
+            "metadata": value.get("metadata"), "error": value.get("error"),
+        }
     return {
         **_run_summary(row),
         "duration_sec": video_info.get("duration_sec") or max((item["end_sec"] for item in windows), default=None),
-        "metrics": body, "run": run_info, "windows": windows,
+        "metrics": body, "workflow_metrics": workflow_metrics,
+        "run": run_info, "windows": windows,
         "artifacts": [
             {
                 "relative_path": item.get("relative_path"), "size_bytes": item.get("size_bytes"),
@@ -299,21 +466,41 @@ def create_app(config_path: str | None = None) -> Any:
     @app.get("/api/catalog")
     def catalog() -> Any:
         with session_factory() as session:
-            videos = session.scalars(
-                select(StoredFile).where(StoredFile.modality == "video", StoredFile.payload_state == "stored")
+            inputs = session.scalars(
+                select(StoredFile).where(
+                    StoredFile.modality.in_(("video", "eeg", "labels")),
+                    StoredFile.payload_state == "stored",
+                )
                 .order_by(StoredFile.created_at.desc()).limit(100)
             ).all()
             runs = session.scalars(select(ModelRun).order_by(ModelRun.started_at.desc()).limit(100)).all()
-        video_rows = []
-        for row in videos:
-            source_id = row.recording_id.split("::", 1)[1] if row.recording_id and "::" in row.recording_id else ""
-            video_rows.append({
-                "id": row.id, "dataset_id": row.dataset_id, "recording_id": row.recording_id,
-                "recording_source_id": source_id, "filename": Path(row.source_relative_path).name,
-                "storage_key": row.storage_key, "size_bytes": row.size_bytes, "sha256": row.sha256,
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in inputs:
+            if not row.recording_id:
+                continue
+            source_id = row.recording_id.split("::", 1)[1] if "::" in row.recording_id else row.recording_id
+            recording = grouped.setdefault(row.recording_id, {
+                "id": row.recording_id, "dataset_id": row.dataset_id,
+                "recording_id": row.recording_id, "recording_source_id": source_id,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
+                "video": None, "eeg": None, "label": None,
             })
-        return jsonify({"videos": video_rows, "runs": [_run_summary(row) for row in runs]})
+            if recording.get(row.modality) is not None:
+                continue
+            file_payload = {
+                "id": row.id, "filename": Path(row.source_relative_path).name,
+                "storage_key": row.storage_key, "size_bytes": row.size_bytes,
+                "sha256": row.sha256,
+            }
+            if row.modality == "labels":
+                recording["label"] = {
+                    **file_payload,
+                    "identity": (row.metadata_json or {}).get("label_identity"),
+                }
+            else:
+                recording[row.modality] = file_payload
+        recordings = sorted(grouped.values(), key=lambda item: item.get("created_at") or "", reverse=True)
+        return jsonify({"recordings": recordings, "runs": [_run_summary(row) for row in runs]})
 
     @app.get("/api/runs/<run_id>")
     def run_result(run_id: str) -> Any:
@@ -343,41 +530,92 @@ def create_app(config_path: str | None = None) -> Any:
 
     @app.post("/api/uploads")
     def upload() -> Any:
+        mode = str(request.form.get("mode", "video")).strip().lower()
+        if mode not in {"video", "eeg", "unimodal"}:
+            return jsonify({"error": "Upload mode must be video, eeg, or unimodal."}), 400
         files = [item for item in request.files.getlist("videos") if item.filename]
-        if not files:
+        eeg_upload = request.files.get("eeg")
+        label_upload = request.files.get("labels")
+        if mode in {"video", "unimodal"} and not files:
             return jsonify({"error": "Choose at least one video file."}), 400
+        if mode in {"eeg", "unimodal"} and not (eeg_upload and eeg_upload.filename):
+            return jsonify({"error": "Choose one EEG CSV file."}), 400
+        if mode == "unimodal" and len(files) != 1:
+            return jsonify({"error": "Upload exactly one video with one EEG CSV when running both independently."}), 400
         try:
-            uploaded = [
+            patient_id = safe_entity(request.form.get("patient_id", "local-patient-001"))
+            recording_id = str(request.form.get("recording_id", "")).strip()
+            if mode == "unimodal" and not recording_id:
+                raise ValueError("Recording ID is required when uploading video and EEG together.")
+            label_identity = None
+            if label_upload and label_upload.filename:
+                if mode == "eeg":
+                    raise ValueError("The video label workbook cannot be attached to an EEG-only upload.")
+                if len(files) != 1:
+                    raise ValueError("Upload exactly one video when attaching a label workbook.")
+                label_identity = _validate_label_upload(
+                    label_upload,
+                    patient_id=patient_id,
+                    seizure_id=str(request.form.get("seizure_id", "")).strip(),
+                    seizure_type=str(request.form.get("seizure_type", "")).strip(),
+                )
+            eeg_validation = _validate_eeg_upload(eeg_upload) if eeg_upload and eeg_upload.filename else None
+            uploaded_videos = [
                 _register_video(
                     settings=settings, storage=storage, session_factory=session_factory, upload=item,
-                    dataset_id=request.form.get("dataset_id", "ui-videos"),
-                    dataset_name=request.form.get("dataset_name", "UI uploaded videos"),
-                    patient_id=request.form.get("patient_id", "local-patient-001"),
-                    recording_id=request.form.get("recording_id", ""), file_count=len(files),
+                    dataset_id=request.form.get("dataset_id", "ui-recordings"),
+                    dataset_name=request.form.get("dataset_name", "UI uploaded recordings"),
+                    patient_id=patient_id,
+                    recording_id=recording_id, file_count=len(files),
                 ) for item in files
             ]
+            uploaded_eeg = None
+            if eeg_upload and eeg_upload.filename and eeg_validation:
+                uploaded_eeg = _register_eeg(
+                    settings=settings, storage=storage, session_factory=session_factory,
+                    upload=eeg_upload, dataset_id=request.form.get("dataset_id", "ui-recordings"),
+                    dataset_name=request.form.get("dataset_name", "UI uploaded recordings"),
+                    patient_id=patient_id, recording_id=recording_id, validation=eeg_validation,
+                )
+            registered_labels = []
+            if label_identity and label_upload:
+                registered_labels.append(_register_label(
+                    settings=settings, storage=storage, session_factory=session_factory,
+                    upload=label_upload, dataset_id=uploaded_videos[0]["dataset_id"],
+                    patient_id=uploaded_videos[0]["patient_id"], recording_id=uploaded_videos[0]["recording_id"],
+                    identity=label_identity,
+                ))
         except Exception as error:
             return jsonify({"error": str(error)}), 400
-        return jsonify({"uploaded": uploaded}), 201
+        return jsonify({
+            "mode": mode, "videos": uploaded_videos, "eeg": uploaded_eeg,
+            "labels": registered_labels,
+            "uploaded": [*uploaded_videos, *([uploaded_eeg] if uploaded_eeg else [])],
+        }), 201
 
     @app.post("/api/runs")
     def start_run() -> Any:
         data = request.get_json(silent=True) or request.form
         dataset_id = str(data.get("dataset_id", "")).strip()
         recording_id = str(data.get("recording_id", "")).strip()
+        mode = str(data.get("mode", "video")).strip().lower()
         require_labels = str(data.get("require_labels", "false")).lower() in {"true", "1", "yes"}
         if not dataset_id or not recording_id:
             return jsonify({"error": "dataset_id and recording_id are required."}), 400
+        if mode not in {"video", "eeg", "unimodal"}:
+            return jsonify({"error": "Run mode must be video, eeg, or unimodal."}), 400
+        if require_labels and mode == "eeg":
+            return jsonify({"error": "require_labels applies to video evaluation, not EEG CSV labels."}), 400
         if not run_lock.acquire(blocking=False):
             return jsonify({"error": "Another model run is already active."}), 409
         job_id = str(uuid.uuid4())
         with jobs_lock:
-            jobs[job_id] = {"id": job_id, "status": "running", "dataset_id": dataset_id, "recording_id": recording_id}
+            jobs[job_id] = {"id": job_id, "status": "running", "dataset_id": dataset_id, "recording_id": recording_id, "mode": mode}
 
         def worker() -> None:
             try:
                 result = SeizureModelIntegration(settings, storage, session_factory).run(
-                    dataset_id, recording_id, mode="video", require_labels=require_labels
+                    dataset_id, recording_id, mode=mode, require_labels=require_labels
                 )
                 with jobs_lock:
                     jobs[job_id] = {"id": job_id, "status": result.status, "result": asdict(result)}

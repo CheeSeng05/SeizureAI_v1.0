@@ -221,6 +221,9 @@ __marimo__/
 # Project local files
 .DS_Store
 .Rhistory
+/.pnpm-store/
+/fyp_data_platform/.test-temp*/
+/fyp_data_platform/.codex-test-deps/
 
 # FYP local data, generated output, and environments
 /FYPModels/test_video/

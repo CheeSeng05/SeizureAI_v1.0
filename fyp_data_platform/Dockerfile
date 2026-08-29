@@ -16,7 +16,7 @@ COPY FYPModels /app/FYPModels
 COPY fyp_data_platform /app/fyp_data_platform
 COPY --from=frontend /build/frontend/dist /app/fyp_data_platform/frontend/dist
 RUN python -m pip install --upgrade pip && \
-    python -m pip install "/app/fyp_data_platform[ui]" "/app/FYPModels[video]"
+    python -m pip install "/app/fyp_data_platform[ui]" "/app/FYPModels[all]"
 WORKDIR /app/fyp_data_platform
 RUN chmod +x docker/entrypoint.sh
 EXPOSE 8080

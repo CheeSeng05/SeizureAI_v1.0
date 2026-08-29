@@ -7,6 +7,7 @@ FrontEnd
 **/.venv*
 **/__pycache__
 **/.pytest_cache
+**/.test-temp*
 **/node_modules
 **/dist
 fyp_data_platform/data
