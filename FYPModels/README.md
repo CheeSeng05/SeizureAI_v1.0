@@ -41,6 +41,44 @@ The upstream hash identifies the relevant row unambiguously:
 `P` means focal/partial seizure and `PG` means partial-to-generalized. EEG and
 clinical onsets remain separate. No seizure offset is inferred.
 
+### Facial preprocessing smoke test
+
+Run this command from the `FYPModels` directory to test the facial preprocessing
+pipeline on one seizure video before preparing the complete dataset:
+
+```bash
+MPLCONFIGDIR=/tmp/mpl-facial \
+python -m seizure_multimodal.facial_region_hybrid.face_preprocess \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  --output results/facial_head_smoke \
+  --sample-id seizure_S1_5_136 \
+  --patient-id S1 \
+  --label 1 \
+  --split train \
+  --fps 5 \
+  --window-seconds 2 \
+  --stride-seconds 1 \
+  --max-poses 4 \
+  --head-margin 0.75 \
+  --patient-roi "0.28,0.05,0.70,0.90" \
+  --preview \
+  --preview-delay-ms 150
+```
+
+The preview displays the selected head region and the exact `224×224` crop
+used to construct the model input. Press `q` or Escape to close the preview;
+preprocessing continues after the window closes. The patient ROI uses
+normalized `x1,y1,x2,y2` coordinates and should include the patient's possible
+head movement while excluding caretakers where possible.
+
+The command writes overlapping two-second windows to
+`results/facial_head_smoke/face`, together with pose and facial-geometry arrays
+and manifest metadata. The default identity-tracking settings allow a maximum
+normalized head jump of `0.18` and reuse the previous crop for at most 15
+sampled frames during short detection failures. Use a new output directory, or
+remove the previous smoke-test output, before repeating the same sample because
+manifest rows are not intended to be duplicated.
+
 ### EEG CSV
 
 `Epileptic Seizure Recognition.csv` has 11,500 rows and 180 columns:
@@ -169,43 +207,52 @@ Those metrics are stored with `validity=simulated` and
 
 ## Model input pipelines
 
-### Facial preprocessing smoke test
 
-Run this command from the `FYPModels` directory to test the facial preprocessing
-pipeline on one seizure video before preparing the complete dataset:
 
-```bash
-MPLCONFIGDIR=/tmp/mpl-facial \
-python -m seizure_multimodal.facial_region_hybrid.face_preprocess \
-  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
-  --output results/facial_head_smoke \
-  --sample-id seizure_S1_5_136 \
-  --patient-id S1 \
-  --label 1 \
-  --split train \
-  --fps 5 \
-  --window-seconds 2 \
-  --stride-seconds 1 \
-  --max-poses 4 \
-  --head-margin 0.75 \
-  --patient-roi "0.28,0.05,0.70,0.90" \
-  --preview \
-  --preview-delay-ms 150
+### Facial ResNet50–BiGRU–multi-head-attention model
+
+The experimental facial classifier is informed by the computer-vision framing
+in [Deep facial analysis: A new phase I epilepsy evaluation using computer
+vision](https://doi.org/10.1016/j.yebeh.2018.02.010) and by the linked
+[Pattern Recognition article](https://www.sciencedirect.com/science/article/pii/S0031320325006752).
+It is an adaptation to this project's RGB-plus-optical-flow windows and binary
+normal/seizure labels, not a claim of reproducing either paper's experiments,
+dataset, results, or released model.
+
+The implemented forward path is:
+
+```text
+[B,T,4,224,224] RGB + optical-flow magnitude
+→ ImageNet-pretrained ResNet50 applied to every frame
+→ [B,T,2048] frame features
+→ bidirectional GRU (256 units per direction)
+→ [B,T,512] temporal features
+→ 8-head temporal self-attention + residual connection + LayerNorm
+→ temporal mean pooling
+→ LayerNorm + dropout + binary linear classifier
 ```
 
-The preview displays the selected head region and the exact `224×224` crop
-used to construct the model input. Press `q` or Escape to close the preview;
-preprocessing continues after the window closes. The patient ROI uses
-normalized `x1,y1,x2,y2` coordinates and should include the patient's possible
-head movement while excluding caretakers where possible.
+The ResNet50 RGB filters retain their ImageNet initialization. Its fourth input
+channel is initialized from the mean pretrained RGB filter. During the current
+training policy, the ResNet50 backbone is frozen except for this adapted input
+layer; the BiGRU, multi-head attention, and classifier are trainable.
 
-The command writes overlapping two-second windows to
-`results/facial_head_smoke/face`, together with pose and facial-geometry arrays
-and manifest metadata. The default identity-tracking settings allow a maximum
-normalized head jump of `0.18` and reuse the previous crop for at most 15
-sampled frames during short detection failures. Use a new output directory, or
-remove the previous smoke-test output, before repeating the same sample because
-manifest rows are not intended to be duplicated.
+Train it on a patient-disjoint preprocessed manifest with:
+
+```bash
+python -m seizure_multimodal.facial_region_hybrid.train \
+  --manifest results/facial_patient_70_30/video_manifest.csv \
+  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
+  --epochs 20 \
+  --batch-size 2 \
+  --attention-heads 8 \
+  --device auto
+```
+
+The held-out test split is evaluated once after the fixed training epochs. The
+attention model requires a newly trained checkpoint: checkpoints from the old
+ResNet50–GRU model do not contain attention parameters and inference rejects
+them explicitly rather than silently using partially initialized weights.
 
 ### VSViG
 

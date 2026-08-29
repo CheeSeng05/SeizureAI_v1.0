@@ -12,7 +12,7 @@ from sklearn.metrics import balanced_accuracy_score, f1_score
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from .facial_model import ResNet50GRU
+from .facial_model import ResNet50GRUAttention
 
 
 CLASSES = ("normal", "seizure")
@@ -83,7 +83,7 @@ class FaceWindowDataset(Dataset):
 
 
 def configure_trainable_layers(
-    model: ResNet50GRU,
+    model: ResNet50GRUAttention,
 ) -> None:
     # Freeze pretrained ResNet50.
     for parameter in model.backbone.parameters():
@@ -93,8 +93,14 @@ def configure_trainable_layers(
     for parameter in model.backbone.conv1.parameters():
         parameter.requires_grad = True
 
-    # GRU and classifier are trainable by default.
+    # GRU, attention, and classifier are trained on the facial dataset.
     for parameter in model.gru.parameters():
+        parameter.requires_grad = True
+
+    for parameter in model.temporal_attention.parameters():
+        parameter.requires_grad = True
+
+    for parameter in model.attention_norm.parameters():
         parameter.requires_grad = True
 
     for parameter in model.classifier.parameters():
@@ -102,7 +108,7 @@ def configure_trainable_layers(
 
 
 def run_training_epoch(
-    model: ResNet50GRU,
+    model: ResNet50GRUAttention,
     loader: DataLoader,
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -137,7 +143,7 @@ def run_training_epoch(
 
 
 def run_evaluation(
-    model: ResNet50GRU,
+    model: ResNet50GRUAttention,
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -183,7 +189,7 @@ def run_evaluation(
 
 def save_checkpoint(
     path: Path,
-    model: ResNet50GRU,
+    model: ResNet50GRUAttention,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: dict[str, float],
@@ -192,7 +198,7 @@ def save_checkpoint(
 
     torch.save(
         {
-            "model_name": "ResNet50GRU",
+            "model_name": "ResNet50GRUAttention",
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch,
@@ -200,6 +206,7 @@ def save_checkpoint(
             "num_classes": len(CLASSES),
             "gru_hidden_size": 256,
             "bidirectional": True,
+            "attention_heads": model.attention_heads,
             "test_metrics": metrics,
         },
         path,
@@ -211,12 +218,13 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/fyp/facial/resnet50_gru_best.pth",
+        default="checkpoints/fyp/facial/resnet50_gru_attention_final.pth",
     )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
@@ -255,8 +263,9 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
 
-    model = ResNet50GRU(
+    model = ResNet50GRUAttention(
         num_classes=len(CLASSES),
+        attention_heads=args.attention_heads,
         pretrained=True,
     ).to(device)
 
@@ -270,6 +279,11 @@ def main() -> None:
             },
             {
                 "params": model.gru.parameters(),
+                "lr": 1e-4,
+            },
+            {
+                "params": list(model.temporal_attention.parameters())
+                + list(model.attention_norm.parameters()),
                 "lr": 1e-4,
             },
             {

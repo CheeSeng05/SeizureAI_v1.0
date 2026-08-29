@@ -16,8 +16,8 @@ EMOTIONS = (
 )
 
 
-class ResNet50GRU(nn.Module):
-    """ResNet50 frame encoder followed by a GRU sequence classifier.
+class ResNet50GRUAttention(nn.Module):
+    """ResNet50 frame encoder, BiGRU, and temporal multi-head attention.
 
     Input:
         [batch, time, 4, height, width]
@@ -36,6 +36,7 @@ class ResNet50GRU(nn.Module):
         gru_layers: int = 1,
         dropout: float = 0.3,
         bidirectional: bool = True,
+        attention_heads: int = 8,
         pretrained: bool = True,
     ) -> None:
         super().__init__()
@@ -82,6 +83,23 @@ class ResNet50GRU(nn.Module):
         gru_output_size = gru_hidden_size * (
             2 if bidirectional else 1
         )
+
+        if attention_heads <= 0:
+            raise ValueError("attention_heads must be positive")
+        if gru_output_size % attention_heads:
+            raise ValueError(
+                "GRU output size must be divisible by attention_heads: "
+                f"{gru_output_size} is not divisible by {attention_heads}"
+            )
+
+        self.attention_heads = attention_heads
+        self.temporal_attention = nn.MultiheadAttention(
+            embed_dim=gru_output_size,
+            num_heads=attention_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(gru_output_size)
 
         self.classifier = nn.Sequential(
             nn.LayerNorm(gru_output_size),
@@ -146,16 +164,23 @@ class ResNet50GRU(nn.Module):
             self.feature_dim,
         )
 
-        _, hidden = self.gru(sequence_features)
+        temporal_features, _ = self.gru(sequence_features)
 
-        if self.gru.bidirectional:
-            # Final forward and final backward hidden states.
-            sequence_embedding = torch.cat(
-                (hidden[-2], hidden[-1]),
-                dim=1,
-            )
-        else:
-            sequence_embedding = hidden[-1]
+        # Each time step attends to every other time step. The residual path
+        # preserves the BiGRU representation while LayerNorm stabilizes it.
+        attended_features, _ = self.temporal_attention(
+            temporal_features,
+            temporal_features,
+            temporal_features,
+            need_weights=False,
+        )
+        attended_features = self.attention_norm(
+            temporal_features + attended_features
+        )
+
+        # All preprocessed windows contain a fixed number of valid frames, so
+        # unmasked temporal mean pooling is appropriate here.
+        sequence_embedding = attended_features.mean(dim=1)
 
         return self.classifier(sequence_embedding)
 
@@ -166,4 +191,7 @@ class ResNet50GRU(nn.Module):
         return torch.softmax(self(video), dim=1)
 
 
-__all__ = ["EMOTIONS", "ResNet50GRU"]
+# Keep the old import name as an alias while making its architecture explicit.
+ResNet50GRU = ResNet50GRUAttention
+
+__all__ = ["EMOTIONS", "ResNet50GRU", "ResNet50GRUAttention"]
