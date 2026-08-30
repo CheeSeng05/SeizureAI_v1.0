@@ -203,6 +203,11 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
     ]
     all_probabilities = [float(row["video_probability"]) for row in rows]
     events = probabilities_to_events(windows, all_probabilities, threshold=0.5)
+    # Model detections exist independently of whether ground truth was supplied.
+    # Persist them for labelled runs as well as prediction-only runs so the UI
+    # never mistakes "evaluated against labels" for "no model events".
+    metrics["predicted_event_count"] = len(events)
+    metrics["predicted_events"] = [asdict(event) for event in events]
     eeg_onset = annotation.get("eeg_onset_sec")
     clinical_onset = annotation.get("clinical_onset_sec")
     if eeg_onset is not None and eeg_onset > 0:

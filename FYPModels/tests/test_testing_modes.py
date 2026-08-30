@@ -201,6 +201,23 @@ class ModeSafeguardTests(unittest.TestCase):
         self.assertEqual(metrics["sensitivity"], "N/A")
         self.assertEqual(metrics["predicted_event_count"], 1)
 
+    def test_video_metrics_keep_model_events_when_labels_are_present(self) -> None:
+        rows = [
+            {"recording_id": "recording-001", "start_sec": 0.0, "end_sec": 1.0,
+             "video_probability": 0.2, "reference_label": 0},
+            {"recording_id": "recording-001", "start_sec": 1.0, "end_sec": 2.0,
+             "video_probability": 0.8, "reference_label": 1},
+        ]
+        metrics = _video_metrics(rows, {"annotation": {
+            "alignment_status": "aligned", "patient_id": "Pat01",
+            "eeg_onset_sec": 0.5, "clinical_onset_sec": 1.0,
+            "seizure_end_sec": None,
+        }})
+
+        self.assertEqual(metrics["predicted_event_count"], 1)
+        self.assertEqual(len(metrics["predicted_events"]), 1)
+        self.assertEqual(metrics["predicted_events"][0]["start_sec"], 1.0)
+
     def test_simulated_pairing_requires_explicit_acknowledgement(self) -> None:
         metadata = result_metadata(
             test_mode="video_only",

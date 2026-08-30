@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any
 
 from botocore.config import Config
@@ -96,3 +97,22 @@ class S3Storage(StorageBackend):
             sha256=(result.get("Metadata") or {}).get("sha256"),
             etag=str(result.get("ETag", "")).strip('"') or None,
         )
+
+    def iter_bytes(
+        self, key: str, *, start: int = 0, end: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        metadata = self.stat(key)
+        if metadata is None:
+            raise FileNotFoundError(key)
+        final = metadata.size_bytes - 1 if end is None else min(end, metadata.size_bytes - 1)
+        if start < 0 or start > final or chunk_size <= 0:
+            raise ValueError("Invalid storage byte range.")
+        response = self.client.get_object(
+            Bucket=self.bucket, Key=self._key(key), Range=f"bytes={start}-{final}"
+        )
+        body = response["Body"]
+        try:
+            yield from body.iter_chunks(chunk_size=chunk_size)
+        finally:
+            body.close()

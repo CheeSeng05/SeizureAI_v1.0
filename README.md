@@ -224,6 +224,28 @@ processed video clips or EEG batches, percentage, elapsed time and an approximat
 remaining time. Progress uses the existing job polling endpoint and requires no
 additional service or different Docker command.
 
+Completed video runs include a synchronized result viewer. The original MP4 is
+streamed from private storage with byte-range requests, detected events can be
+clicked to seek three seconds before the event, and the probability graph shows
+the current playback position. Workbook onset markers are shown when available.
+The event list can be filtered to show all entries, matched detections,
+model-only detections or workbook timestamps. Light red means model-only, blue
+means workbook ground truth, and green means a model event matched the labelled
+timing. Every entry can be clicked to play from three seconds before it.
+
+Matching does not change the model output. When the workbook includes a seizure
+end, a model event is matched when the two time ranges overlap. When the workbook
+only provides onset timestamps, a model event is matched when it contains the
+clinical onset (falling back to EEG onset). No seizure duration is invented.
+The result page also has an analysis threshold slider from `0.00` to `1.00`,
+defaulting to `0.50`. It instantly rebuilds detected events and recalculates
+threshold-dependent label metrics from saved probabilities; it does not rerun
+the model or overwrite the stored run. AUROC stays unchanged because it measures
+probability ranking across thresholds. Use this for exploration, not for tuning
+against the final test dataset.
+AVI, MKV and MOV uploads remain stored and downloadable, but browser preview is
+currently guaranteed only for browser-compatible MP4 files.
+
 ### Prediction-only video
 
 Upload one or more videos without a workbook, then choose **Predict** on the

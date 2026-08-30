@@ -320,9 +320,14 @@ def _prediction_windows(storage: Any, row: ModelRun) -> list[dict[str, Any]]:
             prediction = int(float(prediction_value))
         except (TypeError, ValueError):
             prediction = 0
+        reference_value = _float_or_none(csv_row.get("reference_label"))
         windows.append({
             "start_sec": start, "end_sec": end, "duration_sec": max(end - start, 0.0),
             "probability": probability, "prediction": prediction,
+            "reference_label": int(reference_value) if reference_value in {0.0, 1.0} else None,
+            "eeg_onset_sec": _float_or_none(csv_row.get("eeg_onset_sec")),
+            "clinical_onset_sec": _float_or_none(csv_row.get("clinical_onset_sec")),
+            "seizure_end_sec": _float_or_none(csv_row.get("seizure_end_sec")),
         })
     return windows
 
@@ -402,13 +407,34 @@ def _run_summary(row: ModelRun) -> dict[str, Any]:
     }
 
 
-def _run_result(storage: Any, row: ModelRun) -> dict[str, Any]:
+def _source_video(session: Any, row: ModelRun) -> StoredFile | None:
+    config = row.config_json or {}
+    dataset_id = config.get("dataset_id")
+    recording_id = config.get("recording_id")
+    if not dataset_id or not recording_id:
+        return None
+    return session.scalar(
+        select(StoredFile).where(
+            StoredFile.dataset_id == dataset_id,
+            StoredFile.recording_id == f"{dataset_id}::{recording_id}",
+            StoredFile.modality == "video", StoredFile.payload_state == "stored",
+        ).order_by(StoredFile.created_at.desc())
+    )
+
+
+def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
     windows = _prediction_windows(storage, row)
+    summary = _run_summary(row)
     document = _best_metric_document(row)
     body = _metric_body(document)
     run_info = document.get("run", {}) if isinstance(document.get("run"), dict) else {}
     video_info = run_info.get("video", {}) if isinstance(run_info.get("video"), dict) else {}
     timeline = _find_artifact(row, "video_only/timeline.png", "timeline.png")
+    source_video = _source_video(session, row)
+    ground_truth = {
+        key: next((window.get(key) for window in windows if window.get(key) is not None), None)
+        for key in ("eeg_onset_sec", "clinical_onset_sec", "seizure_end_sec")
+    }
     workflow_metrics: dict[str, Any] = {}
     for path, value in ((row.metrics_json or {}).get("metrics") or {}).items():
         if not isinstance(value, dict):
@@ -419,10 +445,24 @@ def _run_result(storage: Any, row: ModelRun) -> dict[str, Any]:
             "metadata": value.get("metadata"), "error": value.get("error"),
         }
     return {
-        **_run_summary(row),
+        **summary,
+        # Older labelled runs did not persist predicted_events in metrics. Use
+        # their saved prediction windows so they display correctly without a rerun.
+        "outcome": _outcome(row, windows),
         "duration_sec": video_info.get("duration_sec") or max((item["end_sec"] for item in windows), default=None),
         "metrics": body, "workflow_metrics": workflow_metrics,
         "run": run_info, "windows": windows,
+        "ground_truth": ground_truth,
+        "source_video": (
+            {
+                "filename": Path(source_video.source_relative_path).name,
+                "size_bytes": source_video.size_bytes,
+                "media_type": mimetypes.guess_type(source_video.source_relative_path)[0] or "application/octet-stream",
+                "browser_playable": Path(source_video.source_relative_path).suffix.lower() == ".mp4",
+                "url": f"/api/runs/{row.id}/source-video",
+            }
+            if source_video else None
+        ),
         "artifacts": [
             {
                 "relative_path": item.get("relative_path"), "size_bytes": item.get("size_bytes"),
@@ -510,9 +550,57 @@ def create_app(config_path: str | None = None) -> Any:
             if row is None:
                 return jsonify({"error": "Unknown model run."}), 404
             try:
-                return jsonify(_run_result(storage, row))
+                return jsonify(_run_result(storage, session, row))
             except Exception as error:
                 return jsonify({"error": str(error)}), 500
+
+    @app.get("/api/runs/<run_id>/source-video")
+    def run_source_video(run_id: str) -> Any:
+        with session_factory() as session:
+            row = session.get(ModelRun, run_id)
+            if row is None:
+                return jsonify({"error": "Unknown model run."}), 404
+            source = _source_video(session, row)
+            if source is None:
+                return jsonify({"error": "This run does not have a registered source video."}), 404
+            metadata = storage.stat(source.storage_key)
+            if metadata is None or metadata.size_bytes <= 0:
+                return jsonify({"error": "The registered source video is unavailable."}), 404
+            size = metadata.size_bytes
+            range_header = request.headers.get("Range")
+            start, end, status = 0, size - 1, 200
+            if range_header:
+                if not range_header.startswith("bytes=") or "," in range_header:
+                    return Response(status=416, headers={"Content-Range": f"bytes */{size}"})
+                bounds = range_header[6:].split("-", 1)
+                try:
+                    if not bounds[0]:
+                        suffix_length = int(bounds[1])
+                        if suffix_length <= 0:
+                            raise ValueError
+                        start = max(0, size - suffix_length)
+                    else:
+                        start = int(bounds[0])
+                    end = min(int(bounds[1]), size - 1) if bounds[1] else size - 1
+                    if start < 0 or start >= size or end < start:
+                        raise ValueError
+                except ValueError:
+                    return Response(status=416, headers={"Content-Range": f"bytes */{size}"})
+                status = 206
+            headers = {
+                "Accept-Ranges": "bytes", "Content-Length": str(end - start + 1),
+                "Content-Disposition": f'inline; filename="{Path(source.source_relative_path).name}"',
+                "Cache-Control": "private, max-age=3600",
+            }
+            if status == 206:
+                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            return Response(
+                storage.iter_bytes(source.storage_key, start=start, end=end),
+                status=status,
+                mimetype=mimetypes.guess_type(source.source_relative_path)[0] or "application/octet-stream",
+                headers=headers,
+                direct_passthrough=True,
+            )
 
     @app.get("/api/runs/<run_id>/artifacts/<path:relative_path>")
     def run_artifact(run_id: str, relative_path: str) -> Any:

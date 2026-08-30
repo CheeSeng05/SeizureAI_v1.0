@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 from .base import ObjectMetadata, StorageBackend
@@ -57,3 +58,24 @@ class LocalStorage(StorageBackend):
         return ObjectMetadata(
             key=normalize_key(key), size_bytes=path.stat().st_size, sha256=sha256_file(path)
         )
+
+    def iter_bytes(
+        self, key: str, *, start: int = 0, end: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        path = self._path(key)
+        if not path.is_file():
+            raise FileNotFoundError(key)
+        size = path.stat().st_size
+        final = size - 1 if end is None else min(end, size - 1)
+        if start < 0 or start > final or chunk_size <= 0:
+            raise ValueError("Invalid storage byte range.")
+        remaining = final - start + 1
+        with path.open("rb") as stream:
+            stream.seek(start)
+            while remaining:
+                chunk = stream.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk

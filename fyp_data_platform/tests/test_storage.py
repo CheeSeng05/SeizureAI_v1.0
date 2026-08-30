@@ -18,6 +18,7 @@ def test_local_storage_roundtrip_and_idempotence(tmp_path: Path) -> None:
     destination = tmp_path / "download" / "source.txt"
     storage.download_file(first.key, destination)
     assert sha256_file(destination) == first.sha256
+    assert b"".join(storage.iter_bytes(first.key, start=2, end=7, chunk_size=2)) == b"search"
 
 
 def test_local_storage_rejects_traversal(tmp_path: Path) -> None:

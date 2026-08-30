@@ -6,7 +6,24 @@ from openpyxl import Workbook
 import pytest
 
 from fyp_data_platform import ui
+from fyp_data_platform.db.models import ModelRun
+from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.storage.local import LocalStorage
+
+
+def test_completed_labelled_run_derives_events_from_saved_windows() -> None:
+    run = ModelRun(name="labelled", status="completed", metrics_json={})
+    windows = [
+        {"start_sec": 0.0, "end_sec": 1.0, "probability": 0.2, "prediction": 0},
+        {"start_sec": 1.0, "end_sec": 2.0, "probability": 0.8, "prediction": 1},
+        {"start_sec": 2.0, "end_sec": 3.0, "probability": 0.7, "prediction": 1},
+    ]
+
+    outcome = ui._outcome(run, windows)
+
+    assert outcome is not None
+    assert outcome["event_count"] == 1
+    assert outcome["events"] == [{"start_sec": 1.0, "end_sec": 3.0, "score": 0.8}]
 
 
 def test_health_and_empty_catalog_use_platform_database(settings, migrated_db, monkeypatch) -> None:
@@ -154,3 +171,37 @@ def test_run_rejects_unknown_mode(settings, migrated_db, monkeypatch) -> None:
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "Run mode must be video, eeg, or unimodal."
+
+
+def test_source_video_supports_browser_byte_ranges(settings, migrated_db, monkeypatch) -> None:
+    engine, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: storage)
+    client = ui.create_app().test_client()
+    uploaded = client.post(
+        "/api/uploads",
+        data={
+            "mode": "video", "videos": (BytesIO(b"0123456789"), "sample.mp4"),
+            "dataset_id": "ui-recordings", "patient_id": "Pat01", "recording_id": "video-001",
+        }, content_type="multipart/form-data",
+    )
+    assert uploaded.status_code == 201
+    with factory.begin() as session:
+        CatalogRepository(session).model_run(
+            "run-video", name="video", model_type="video", model_version=None,
+            modality="video", status="completed", git_commit=None,
+            config_json={"dataset_id": "ui-recordings", "recording_id": "video-001"},
+            metrics_json={"metrics": {}, "artifacts": []}, artifact_file_id=None,
+            started_at=None, completed_at=None,
+        )
+
+    result = client.get("/api/runs/run-video")
+    response = client.get("/api/runs/run-video/source-video", headers={"Range": "bytes=2-5"})
+
+    assert result.get_json()["source_video"]["browser_playable"] is True
+    assert response.status_code == 206
+    assert response.data == b"2345"
+    assert response.headers["Content-Range"] == "bytes 2-5/10"
+    assert response.headers["Accept-Ranges"] == "bytes"
