@@ -66,6 +66,8 @@
 .threshold-control strong { color: #263244; font-size: 14px; }
 .threshold-control span { color: #64748b; font-size: 10px; }
 .threshold-control input { width: 100%; accent-color: #2563eb; cursor: pointer; }
+.threshold-input { display: grid; grid-template-columns: 1fr 90px; align-items: center; gap: 14px; }
+.threshold-input input[type="number"] { height: 40px; padding: 0 9px; border: 1px solid #cbd5e1; border-radius: 8px; color: #263244; background: #fff; text-align: center; }
 .threshold-scale { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .threshold-scale button { padding: 6px 10px; border: 1px solid #bfdbfe; border-radius: 7px; color: #2563eb; background: #eff6ff; cursor: pointer; }
 .threshold-scale button:disabled { opacity: .5; cursor: default; }
@@ -89,6 +91,7 @@
 .detection-jumps button.matched { border-color: #a7f3d0; background: #ecfdf5; }
 .detection-jumps button.workbook { border-color: #bfdbfe; background: #eff6ff; }
 .detection-jumps button:hover { filter: brightness(.97); }
+.detection-jumps button.selected { outline: 2px solid #2563eb; outline-offset: 1px; }
 .detection-jumps button > svg { flex: none; width: 18px; }
 .detection-jumps button span { display: flex; flex-direction: column; }
 .detection-jumps strong { color: #334155; font-size: 11px; }
@@ -99,8 +102,15 @@
 .model-only-key::before { background: #f87171; }
 .matched-key::before { background: #22c55e; }
 .truth-key::before { background: #2563eb; }
+.threshold-key::before { height: 0 !important; border-top: 2px dashed #f59e0b; border-radius: 0 !important; }
 .playhead-key::before { background: #111827; }
 .interactive-timeline { position: relative; }
+.timeline-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #64748b; font-size: 10px; }
+.event-detail { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 12px 14px; border: 1px solid #dbe3ec; border-radius: 10px; background: #f8fafc; }
+.event-detail > div:first-child { display: flex; flex-direction: column; gap: 4px; }
+.event-detail > div:last-child { display: flex; gap: 7px; }
+.event-detail strong { font-size: 12px; }.event-detail span { color: #64748b; font-size: 10px; }
+.event-detail.model-only { border-color: #fecdd3; background: #fff1f2; }.event-detail.matched { border-color: #a7f3d0; background: #ecfdf5; }.event-detail.workbook { border-color: #bfdbfe; background: #eff6ff; }
 .timeline-bars { position: relative; display: flex; align-items: flex-end; height: 210px; padding: 20px 12px 0; border-bottom: 1px solid #d9e0e9; background: linear-gradient(#f8fafc 1px, transparent 1px); background-size: 100% 25%; }
 .timeline-bars button { position: relative; z-index: 2; flex: 1; min-width: 1px; max-width: 10px; padding: 0; border: 0; border-radius: 2px 2px 0 0; background: #cbd5e1; cursor: pointer; }
 .timeline-bars button:hover { background: #60a5fa; }
@@ -108,6 +118,8 @@
 .timeline-bars button.positive.model-only:hover { background: #ef4444; }
 .timeline-bars button.positive.matched { background: #22c55e; }
 .timeline-bars button.positive.matched:hover { background: #16a34a; }
+.threshold-line { position: absolute; z-index: 4; right: 0; left: 0; height: 2px; border-top: 2px dashed #f59e0b; pointer-events: none; }
+.threshold-line::after { content: 'threshold'; position: absolute; right: 3px; bottom: 3px; color: #b45309; font-size: 8px; }
 .playback-marker, .truth-marker { position: absolute; z-index: 5; top: 0; bottom: 0; width: 2px; pointer-events: none; }
 .playback-marker { background: #111827; box-shadow: 0 0 0 1px #fff; }
 .playback-marker::before { content: ''; position: absolute; top: 0; left: -4px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid #111827; }

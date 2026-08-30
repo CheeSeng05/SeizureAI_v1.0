@@ -1,5 +1,6 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { Activity, Brain, Database, FileClock, LayoutDashboard, Server, Upload } from 'lucide-react';
+import { useEffect } from 'react';
+import { Activity, Brain, Database, FileClock, GitCompare, LayoutDashboard, Server, Settings as SettingsIcon, Upload } from 'lucide-react';
 import { useResource } from './hooks';
 import { api } from './api';
 import Dashboard from './pages/Dashboard';
@@ -8,17 +9,30 @@ import Recordings from './pages/Recordings';
 import Runs from './pages/Runs';
 import RunResult from './pages/RunResult';
 import System from './pages/System';
+import Settings from './pages/Settings';
+import RunCompare from './pages/RunCompare';
 
 const links = [
   ['/', 'Dashboard', LayoutDashboard, true],
   ['/upload', 'Upload', Upload],
   ['/recordings', 'Recordings', Database],
   ['/runs', 'Model runs', FileClock],
+  ['/compare', 'Compare runs', GitCompare],
   ['/system', 'System', Server],
+  ['/settings', 'Settings', SettingsIcon],
 ];
+
+function applyPreferences() {
+  const theme = localStorage.getItem('seizureai-theme') || 'system';
+  const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.documentElement.dataset.contrast = localStorage.getItem('seizureai-contrast') || 'normal';
+  document.documentElement.dataset.motion = localStorage.getItem('seizureai-motion') || 'normal';
+}
 
 export default function App() {
   const health = useResource(api.health, []);
+  useEffect(() => { applyPreferences(); window.addEventListener('seizureai-preferences', applyPreferences); return () => window.removeEventListener('seizureai-preferences', applyPreferences); }, []);
   return <div className="shell">
     <aside className="sidebar">
       <div className="brand"><span><Brain /></span><div><strong>SeizureAI</strong><small>VIDEO ANALYSIS</small></div></div>
@@ -43,7 +57,9 @@ export default function App() {
           <Route path="/recordings" element={<Recordings />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/runs/:id" element={<RunResult />} />
+          <Route path="/compare" element={<RunCompare />} />
           <Route path="/system" element={<System />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

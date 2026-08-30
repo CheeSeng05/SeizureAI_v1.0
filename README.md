@@ -243,6 +243,32 @@ threshold-dependent label metrics from saved probabilities; it does not rerun
 the model or overwrite the stored run. AUROC stays unchanged because it measures
 probability ranking across thresholds. Use this for exploration, not for tuning
 against the final test dataset.
+
+The threshold can also be typed precisely. The result page shows a moving
+threshold line, default-versus-selected metrics, a plain-language summary,
+high-confidence and label-aware event filters, event details, playback/zoom
+controls, and a downloadable JSON report. Metric names include hover help.
+These tools work for prediction-only and label-backed video; ground-truth
+comparisons are shown only when a workbook was supplied.
+
+The **Compare runs** page applies separate temporary thresholds to two stored
+probability timelines, recalculates their event and label-backed metrics, and
+shows Run A minus Run B. Differences use green only when the direction is an
+improvement, red for deterioration and grey for neutral measures such as event
+count. It warns when recordings, models, modalities or label modes differ.
+
+The result Export button creates a human-readable PDF containing the selected
+threshold, run/device information, a plain-language summary, evaluation metrics,
+detected event timestamps and the research-use disclaimer. When workbook labels
+are present, it also includes EEG onset, clinical onset, seizure end availability
+and the number of model events matched to the workbook timing.
+The Compare Runs page can export its own formatted PDF with both configurations,
+independent thresholds, the colour-coded A-minus-B table, fair-comparison
+warnings and a plain-language interpretation.
+
+The **Settings** page provides persistent light, dark or system appearance,
+standard/high contrast, and reduced-motion preferences. Preferences are stored
+only in the current browser and do not change the pipeline or database.
 AVI, MKV and MOV uploads remain stored and downloadable, but browser preview is
 currently guaranteed only for browser-compatible MP4 files.
 
