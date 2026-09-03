@@ -1,0 +1,69 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Length 2254 >>
+stream
+BT /F2 18 Tf 1 0 0 1 50 750 Tm (SeizureAI Research Report) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 720 Tm (Recording: Sz2PG-sample) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 705 Tm (Dataset: VSViG-demo) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 690 Tm (Run ID: sample-run-labelled) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 675 Tm (Status: completed) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 660 Tm (Processing device: NVIDIA GeForce RTX 4070 Laptop GPU) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 645 Tm (Total runtime: 123.45 seconds) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 630 Tm (Selected analysis threshold: 0.75) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 615 Tm () Tj ET
+BT /F1 10 Tf 1 0 0 1 50 600 Tm (At threshold 0.75, the model identified 3 possible seizure events. 1 matched the) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 585 Tm (workbook timing and 2 were model-only.) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 570 Tm () Tj ET
+BT /F1 10 Tf 1 0 0 1 50 555 Tm (Workbook ground truth) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 540 Tm (EEG onset: 68.00 seconds) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 525 Tm (Clinical onset: 75.00 seconds) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 510 Tm (Seizure end: Not provided in workbook) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 495 Tm (Model events matched to workbook timing: 1) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 480 Tm () Tj ET
+BT /F1 10 Tf 1 0 0 1 50 465 Tm (Evaluation metrics) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 450 Tm (Sensitivity: 0.745) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 435 Tm (Specificity: 0.502) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 420 Tm (Precision: 0.320) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 405 Tm (F1: 0.448) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 390 Tm (AUROC: 0.739) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 375 Tm (False positives per hour: 3.200) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 360 Tm () Tj ET
+BT /F1 10 Tf 1 0 0 1 50 345 Tm (Detected events) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 330 Tm (1. 42.00s to 49.50s, peak probability 0.820) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 315 Tm (2. 73.50s to 81.00s, peak probability 0.910) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 300 Tm (3. 154.00s to 159.50s, peak probability 0.770) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 285 Tm () Tj ET
+BT /F1 10 Tf 1 0 0 1 50 270 Tm (Research prototype only. This report is not a medical diagnosis and must not be used as) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 255 Tm (a substitute for clinical review.) Tj ET
+BT /F1 8 Tf 1 0 0 1 500 28 Tm (Page 1 of 1) Tj ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 3 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Count 1 /Kids [4 0 R] >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000154 00000 n 
+0000002460 00000 n 
+0000002596 00000 n 
+0000002653 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+2702
+%%EOF

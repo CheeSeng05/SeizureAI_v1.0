@@ -1,0 +1,45 @@
+:focus-visible { outline: 3px solid #38bdf8; outline-offset: 2px; }
+.title-actions, .comparison-links { display: flex; align-items: center; gap: 10px; }
+.metric-help { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 7px; border-radius: 50%; color: #2563eb; background: #dbeafe; font-size: 10px; cursor: help; }
+.setting-group, .compare-selectors { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 16px; }
+.setting-group label, .compare-selectors label { display: flex; flex-direction: column; gap: 7px; color: #64748b; font-size: 11px; font-weight: 650; }
+.setting-group select, .compare-selectors select { height: 42px; padding: 0 11px; border: 1px solid #dbe2ea; border-radius: 8px; color: #334155; background: #fff; }
+.comparison-table { display: flex; flex-direction: column; }
+.comparison-table > div { display: grid; grid-template-columns: minmax(150px, 1.2fr) 1fr 1fr; gap: 12px; padding: 11px 8px; border-bottom: 1px solid #edf0f4; font-size: 12px; }
+.comparison-table > div:first-child { color: #64748b; background: #f8fafc; }
+.comparison-table span { color: #64748b; }.comparison-table b { color: #263244; font-family: ui-monospace, monospace; }
+.comparison-links { margin-top: 18px; }
+.compare-run-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.compare-run-grid fieldset { display: flex; flex-direction: column; gap: 15px; margin: 0; padding: 16px; border: 1px solid #dbe2ea; border-radius: 10px; }
+.compare-run-grid legend { padding: 0 7px; color: #263244; font-size: 13px; font-weight: 700; }
+.compare-run-grid label { display: flex; flex-direction: column; gap: 7px; color: #64748b; font-size: 11px; font-weight: 650; }
+.compare-run-grid select, .compare-run-grid input[type="number"] { height: 40px; padding: 0 9px; border: 1px solid #dbe2ea; border-radius: 8px; color: #334155; background: #fff; }
+.compare-threshold { display: grid; grid-template-columns: 1fr 78px; align-items: center; gap: 10px; }.compare-threshold input[type="range"] { width: 100%; accent-color: #2563eb; }
+.comparison-note { margin: 13px 0 0; color: #64748b; font-size: 10px; }
+.difference-table > div { grid-template-columns: minmax(150px, 1.2fr) 1fr 1fr 1fr; }
+.difference-table em { width: fit-content; min-width: 65px; padding: 5px 8px; border-radius: 7px; font-style: normal; font-weight: 750; text-align: center; }
+.difference-table em.improved, .difference-legend .improved { color: #047857; background: #ecfdf5; }.difference-table em.worse, .difference-legend .worse { color: #b91c1c; background: #fef2f2; }.difference-table em.neutral { color: #64748b; background: #f1f5f9; }
+.difference-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.difference-legend span { padding: 5px 8px; border-radius: 7px; color: #64748b; background: #f1f5f9; font-size: 9px; }
+
+html[data-motion="reduced"] *, html[data-motion="reduced"] *::before, html[data-motion="reduced"] *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; transition-duration: .001ms !important; }
+html[data-contrast="high"] { filter: contrast(1.12); }
+
+html[data-theme="dark"] { color-scheme: dark; color: #e5edf7; background: #0b1220; }
+html[data-theme="dark"] body, html[data-theme="dark"] .workspace { background: #0b1220; }
+html[data-theme="dark"] .sidebar, html[data-theme="dark"] .topbar, html[data-theme="dark"] .card, html[data-theme="dark"] .stat { color: #e5edf7; background: #111a2b; border-color: #26344a; }
+html[data-theme="dark"] .brand, html[data-theme="dark"] .topbar, html[data-theme="dark"] .card-head { border-color: #26344a; }
+html[data-theme="dark"] .page-title h1, html[data-theme="dark"] .card-head h3, html[data-theme="dark"] .stat strong, html[data-theme="dark"] td strong, html[data-theme="dark"] .metric-list dd, html[data-theme="dark"] .metric-list strong, html[data-theme="dark"] .run-row .grow strong, html[data-theme="dark"] .artifact-list strong, html[data-theme="dark"] .system-item strong { color: #f8fafc; }
+html[data-theme="dark"] .button, html[data-theme="dark"] input, html[data-theme="dark"] select, html[data-theme="dark"] .search { color: #dbe7f5; background: #172235; border-color: #33445d; }
+html[data-theme="dark"] .compare-run-grid fieldset { border-color: #33445d; } html[data-theme="dark"] .compare-run-grid legend { color: #f1f5f9; }
+html[data-theme="dark"] .sidebar nav a:hover, html[data-theme="dark"] .run-row:hover, html[data-theme="dark"] .artifact-list a:hover { background: #172235; }
+html[data-theme="dark"] .sidebar nav a.active { color: #93c5fd; background: #1e3a5f; }
+html[data-theme="dark"] .research-note, html[data-theme="dark"] .comparison-table > div:first-child, html[data-theme="dark"] .event-detail { background: #172235; }
+html[data-theme="dark"] .timeline-bars { background-color: #111a2b; background-image: linear-gradient(#26344a 1px, transparent 1px); border-color: #334155; }
+html[data-theme="dark"] .detection-sidebar, html[data-theme="dark"] .detection-heading, html[data-theme="dark"] .event-filters { border-color: #334155; background: #111a2b; }
+html[data-theme="dark"] .detection-jumps button.model-only { color: #fecaca; background: #3a1d27; border-color: #7f1d1d; }
+html[data-theme="dark"] .detection-jumps button.matched { color: #a7f3d0; background: #123529; border-color: #166534; }
+html[data-theme="dark"] .detection-jumps button.workbook { color: #bfdbfe; background: #172e52; border-color: #1d4ed8; }
+html[data-theme="dark"] .detection-jumps strong, html[data-theme="dark"] .event-detail strong, html[data-theme="dark"] .comparison-table b { color: #f1f5f9; }
+html[data-theme="dark"] .notice { color: #bfdbfe; background: #172e52; border-color: #1d4ed8; }
+html[data-theme="dark"] .notice.danger { color: #fecaca; background: #3a1d27; border-color: #991b1b; }
+@media(max-width:760px) { .setting-group, .compare-selectors, .compare-run-grid { grid-template-columns: 1fr; } .title-actions { flex-wrap: wrap; } .comparison-table > div { grid-template-columns: 1fr 1fr 1fr; } .difference-table { overflow-x: auto; }.difference-table > div { min-width: 560px; grid-template-columns: 1.2fr 1fr 1fr 1fr; } }
