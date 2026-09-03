@@ -13,7 +13,7 @@ from seizure_multimodal.facial_region_hybrid.train import resolve_device
 
 
 class FacialDatasetPlanTest(unittest.TestCase):
-    def test_class_stratified_70_30_video_split_is_reproducible(self) -> None:
+    def test_class_stratified_three_way_video_split_is_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for class_name in ("Normal", "Seizure"):
@@ -27,9 +27,11 @@ class FacialDatasetPlanTest(unittest.TestCase):
             self.assertEqual(first, second)
             counts = Counter((row["split"], row["label"]) for row in first)
             self.assertEqual(counts[("train", "0")], 7)
-            self.assertEqual(counts[("test", "0")], 3)
+            self.assertEqual(counts[("validation", "0")], 2)
+            self.assertEqual(counts[("test", "0")], 1)
             self.assertEqual(counts[("train", "1")], 7)
-            self.assertEqual(counts[("test", "1")], 3)
+            self.assertEqual(counts[("validation", "1")], 2)
+            self.assertEqual(counts[("test", "1")], 1)
 
     def test_patient_split_has_no_patient_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -43,9 +45,11 @@ class FacialDatasetPlanTest(unittest.TestCase):
             rows = stratified_video_plan(root, seed=7, split_unit="patient")
             counts = Counter((row["split"], row["label"]) for row in rows)
             self.assertEqual(counts[("train", "0")], 7)
-            self.assertEqual(counts[("test", "0")], 3)
+            self.assertEqual(counts[("validation", "0")], 2)
+            self.assertEqual(counts[("test", "0")], 1)
             self.assertEqual(counts[("train", "1")], 7)
-            self.assertEqual(counts[("test", "1")], 3)
+            self.assertEqual(counts[("validation", "1")], 2)
+            self.assertEqual(counts[("test", "1")], 1)
             self.assertFalse(summarize_plan(rows)["patient_leakage_warning"])
 
     def test_summary_reports_patient_leakage(self) -> None:

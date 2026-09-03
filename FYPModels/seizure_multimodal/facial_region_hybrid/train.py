@@ -8,11 +8,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import balanced_accuracy_score, f1_score
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from .facial_model import ResNet50GRUAttention
+from ..evaluation.classification import binary_classification_metrics
+from ..evaluation.thresholds import select_threshold
 
 
 CLASSES = ("normal", "seizure")
@@ -43,6 +44,13 @@ class FaceWindowDataset(Dataset):
             encoding="utf-8",
         ) as stream:
             rows = list(csv.DictReader(stream))
+
+        if not rows:
+            raise ValueError(
+                f"Manifest contains no windows: {self.manifest_path}. "
+                "The requested preprocessing window may be longer than the "
+                "source videos. Regenerate using a shorter window."
+            )
 
         self.rows = [
             row
@@ -147,13 +155,13 @@ def run_evaluation(
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
-) -> dict[str, float]:
+) -> tuple[dict[str, float | int | None | str], list[int], list[float]]:
     model.eval()
 
     total_loss = 0.0
     total_samples = 0
-    predictions: list[int] = []
     targets: list[int] = []
+    probabilities: list[float] = []
 
     with torch.inference_mode():
         for videos, labels in loader:
@@ -167,24 +175,14 @@ def run_evaluation(
             total_loss += loss.item() * count
             total_samples += count
 
-            predictions.extend(
-                logits.argmax(dim=1).cpu().tolist()
-            )
+            probabilities.extend(torch.softmax(logits, dim=1)[:, 1].cpu().tolist())
             targets.extend(labels.cpu().tolist())
 
-    return {
+    metrics = {
         "loss": total_loss / total_samples,
-        "macro_f1": f1_score(
-            targets,
-            predictions,
-            average="macro",
-            zero_division=0,
-        ),
-        "balanced_accuracy": balanced_accuracy_score(
-            targets,
-            predictions,
-        ),
+        **binary_classification_metrics(targets, probabilities),
     }
+    return metrics, targets, probabilities
 
 
 def save_checkpoint(
@@ -192,7 +190,8 @@ def save_checkpoint(
     model: ResNet50GRUAttention,
     optimizer: torch.optim.Optimizer,
     epoch: int,
-    metrics: dict[str, float],
+    metrics: dict[str, float | int | None | str],
+    threshold: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -207,7 +206,8 @@ def save_checkpoint(
             "gru_hidden_size": 256,
             "bidirectional": True,
             "attention_heads": model.attention_heads,
-            "test_metrics": metrics,
+            "validation_metrics": metrics,
+            "probability_threshold": threshold,
         },
         path,
     )
@@ -243,9 +243,9 @@ def main() -> None:
         args.manifest,
         split="train",
     )
-    test_dataset = FaceWindowDataset(
+    validation_dataset = FaceWindowDataset(
         args.manifest,
-        split="test",
+        split="validation",
     )
 
     train_loader = DataLoader(
@@ -255,8 +255,8 @@ def main() -> None:
         num_workers=args.workers,
         pin_memory=device.type == "cuda",
     )
-    test_loader = DataLoader(
-        test_dataset,
+    validation_loader = DataLoader(
+        validation_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
@@ -314,21 +314,35 @@ def main() -> None:
         history.append(result)
         print(json.dumps(result))
 
-    # Evaluate exactly once after fixed-epoch training so the held-out test set
-    # is not used to select a checkpoint or tune training duration.
-    test_metrics = run_evaluation(
+    # Select the operating threshold on validation patients. The test cohort is
+    # never loaded by training and is reserved for the standalone evaluator.
+    validation_metrics, validation_labels, validation_probabilities = run_evaluation(
         model,
-        test_loader,
+        validation_loader,
         criterion,
         device,
     )
-    print(json.dumps({f"test_{key}": value for key, value in test_metrics.items()}))
+    threshold_result = select_threshold(
+        validation_labels, validation_probabilities, split="validation"
+    )
+    selected_threshold = float(threshold_result["threshold"])
+    validation_metrics = {
+        **validation_metrics,
+        **binary_classification_metrics(
+            validation_labels, validation_probabilities, threshold=selected_threshold
+        ),
+    }
+    print(json.dumps({
+        "validation_metrics": validation_metrics,
+        "selected_threshold": selected_threshold,
+    }))
     save_checkpoint(
         checkpoint_path,
         model,
         optimizer,
         args.epochs,
-        test_metrics,
+        validation_metrics,
+        selected_threshold,
     )
     print(f"Saved final checkpoint: {checkpoint_path}")
 

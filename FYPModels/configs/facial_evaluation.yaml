@@ -1,0 +1,24 @@
+# Freeze this file before opening the untouched test cohort.
+split: test
+batch_size: 4
+minimum_face_detection: 0.5
+use_checkpoint_threshold: true
+
+event_generation:
+  # Select these settings on validation patients only.
+  probability_threshold: 0.5  # fallback only when use_checkpoint_threshold is false
+  minimum_event_duration_sec: 2.0
+  gap_tolerance_sec: 1.0
+  refractory_period_sec: 10.0
+
+onset_reference: clinical_onset
+offset_annotations_available: true
+
+bootstrap:
+  confidence: 0.95
+  resamples: 1000
+  seed: 42
+
+# Annotation CSV columns:
+# patient_id,recording_id,monitor_start_sec,monitor_end_sec,
+# seizure_onset_sec,seizure_offset_sec,annotator_id

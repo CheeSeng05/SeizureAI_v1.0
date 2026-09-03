@@ -1,0 +1,3 @@
+patient_id,recording_id,monitor_start_sec,monitor_end_sec,seizure_onset_sec,seizure_offset_sec,annotator_id
+S01,S01_recording_01,0.0,1800.0,624.2,681.7,C01
+S02,S02_recording_01,0.0,1800.0,,,C01

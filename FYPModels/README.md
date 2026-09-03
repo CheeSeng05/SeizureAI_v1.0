@@ -376,6 +376,74 @@ results/
 Every result JSON and populated prediction row records test mode, models used,
 fusion used, pairing type, training status, and both checkpoints.
 
+## Facial model clinical-evaluation workflow
+
+The facial workflow uses disjoint patient groups: training fits weights,
+validation selects the seizure-probability threshold, and the standalone
+evaluator opens the test cohort only for the final report. Regenerate existing
+two-way manifests before using this workflow.
+
+1. Create and preprocess a 70/15/15 patient split:
+
+```bash
+python -m seizure_multimodal.facial_region_hybrid.prepare_dataset \
+  --dataset-root "datasets/Seizure videos of epilepsy patients" \
+  --output results/facial_patient_70_15_15 \
+  --split-unit patient --train-fraction 0.70 --validation-fraction 0.15
+```
+
+2. Train on `train`; threshold selection uses only `validation`. Training never
+loads `test`:
+
+```bash
+python -m seizure_multimodal.facial_region_hybrid.train \
+  --manifest results/facial_patient_70_15_15/video_manifest.csv \
+  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth
+```
+
+3. Copy `configs/facial_annotations.example.csv`, replace the example rows with
+clinician-verified recording bounds and seizure onset/offset timestamps, and
+freeze `configs/facial_evaluation.yaml` before final testing. A blank onset and
+offset represents a monitored recording with no seizure; never use clip bounds
+as invented seizure offsets.
+
+4. Evaluate isolated labelled clips without inventing temporal annotations:
+
+```bash
+python -m seizure_multimodal.facial_region_hybrid.evaluation \
+  --mode clip \
+  --manifest results/facial_patient_70_15_15/video_manifest.csv \
+  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
+  --config configs/facial_evaluation.yaml \
+  --output results/facial_final_evaluation
+```
+
+Clip mode reports classification metrics, patient-bootstrap confidence
+intervals, and biomarkers. Event sensitivity, FP/hour, and onset/offset errors
+are explicitly unavailable because short curated clips are not continuous
+monitoring records.
+
+5. When clinician-verified continuous event annotations are available, use
+event mode:
+
+```bash
+python -m seizure_multimodal.facial_region_hybrid.evaluation \
+  --mode event \
+  --manifest results/facial_patient_70_15_15/video_manifest.csv \
+  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
+  --annotations configs/facial_annotations.csv \
+  --config configs/facial_evaluation.yaml \
+  --output results/facial_final_evaluation
+```
+
+This writes timestamped `predictions.csv`, transparent motor/facial-expression
+proxies in `biomarkers.csv`, and `metrics.json` containing window sensitivity,
+specificity, AUROC, F1, event sensitivity, false positives/hour, onset/offset
+errors, and patient-bootstrap 95% confidence intervals. Biomarkers are
+measurement proxies rather than emotion diagnoses. Validate them against
+independent clinician scores with `evaluation/biomarker_validation.py` before
+making clinical claims.
+
 ## Installation and verification
 
 ```powershell
