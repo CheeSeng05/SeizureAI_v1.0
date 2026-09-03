@@ -42,13 +42,14 @@ def _matches_identity(
     seizure_id: str | None,
     seizure_type: str | None,
 ) -> list[dict[str, Any]]:
+    same = lambda left, right: str(left or "").strip().casefold() == str(right or "").strip().casefold()
     if patient_id and any(record.get("resolved_PatID") for record in records):
-        records = [record for record in records if record.get("resolved_PatID") == patient_id]
+        records = [record for record in records if same(record.get("resolved_PatID"), patient_id)]
     if seizure_id and any(record.get("#Seizure") for record in records):
-        records = [record for record in records if str(record.get("#Seizure")) == seizure_id]
+        records = [record for record in records if same(record.get("#Seizure"), seizure_id)]
     if seizure_type and any(record.get("resolved_Seizure Type") for record in records):
         records = [
-            record for record in records if record.get("resolved_Seizure Type") == seizure_type
+            record for record in records if same(record.get("resolved_Seizure Type"), seizure_type)
         ]
     return records
 
@@ -69,7 +70,7 @@ def _load_interval_csv_annotation(
         seizure_type=seizure_type,
     )
     if recording_id and any(record.get("recording_id") for record in records):
-        records = [record for record in records if str(record.get("recording_id")) == recording_id]
+        records = [record for record in records if str(record.get("recording_id") or "").strip().casefold() == recording_id.strip().casefold()]
     if not records:
         return VideoAnnotation(
             None, None, None, None, None, None, "requires_at_least_one_interval",
@@ -523,6 +524,11 @@ def predict_video_file(
         seizure_type=annotation_seizure_type,
         recording_id=recording_id,
     )
+    if label_path and annotation.alignment_status in {
+        "requires_at_least_one_interval", "requires_exactly_one_record", "onset_missing",
+        "out_of_video_range_requires_real_clip_offset",
+    }:
+        raise ValueError(f"Video label validation failed: {annotation.alignment_status}. Check label identity and video-local timestamps.")
     pose = LightweightOpenPose(
         source_directory=pose_source,
         checkpoint_path=pose_checkpoint,

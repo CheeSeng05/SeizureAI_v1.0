@@ -19,6 +19,7 @@
 .difference-table > div { grid-template-columns: minmax(150px, 1.2fr) 1fr 1fr 1fr; }
 .difference-table em { width: fit-content; min-width: 65px; padding: 5px 8px; border-radius: 7px; font-style: normal; font-weight: 750; text-align: center; }
 .difference-table em.improved, .difference-legend .improved { color: #047857; background: #ecfdf5; }.difference-table em.worse, .difference-legend .worse { color: #b91c1c; background: #fef2f2; }.difference-table em.neutral { color: #64748b; background: #f1f5f9; }
+.comparison-section-title { margin: 24px 8px 9px; color: #263244; font-size: 13px; }.comparison-section-title:first-child { margin-top: 0; }
 .difference-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.difference-legend span { padding: 5px 8px; border-radius: 7px; color: #64748b; background: #f1f5f9; font-size: 9px; }
 
 html[data-motion="reduced"] *, html[data-motion="reduced"] *::before, html[data-motion="reduced"] *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; transition-duration: .001ms !important; }
@@ -40,6 +41,7 @@ html[data-theme="dark"] .detection-jumps button.model-only { color: #fecaca; bac
 html[data-theme="dark"] .detection-jumps button.matched { color: #a7f3d0; background: #123529; border-color: #166534; }
 html[data-theme="dark"] .detection-jumps button.workbook { color: #bfdbfe; background: #172e52; border-color: #1d4ed8; }
 html[data-theme="dark"] .detection-jumps strong, html[data-theme="dark"] .event-detail strong, html[data-theme="dark"] .comparison-table b { color: #f1f5f9; }
+html[data-theme="dark"] .comparison-section-title { color: #f1f5f9; }
 html[data-theme="dark"] .notice { color: #bfdbfe; background: #172e52; border-color: #1d4ed8; }
 html[data-theme="dark"] .notice.danger { color: #fecaca; background: #3a1d27; border-color: #991b1b; }
 @media(max-width:760px) { .setting-group, .compare-selectors, .compare-run-grid { grid-template-columns: 1fr; } .title-actions { flex-wrap: wrap; } .comparison-table > div { grid-template-columns: 1fr 1fr 1fr; } .difference-table { overflow-x: auto; }.difference-table > div { min-width: 560px; grid-template-columns: 1.2fr 1fr 1fr 1fr; } }

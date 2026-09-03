@@ -117,6 +117,7 @@ def test_upload_registers_interval_csv_video_labels(settings, migrated_db, monke
     assert response.status_code == 201, response.get_json()
     identity = response.get_json()["labels"][0]["identity"]
     assert identity["label_format"] == "interval_csv"
+    assert identity["recording_id"] == "stitched-test-001"
     assert identity["interval_count"] == 2
     assert identity["clinical_onset_sec"] == pytest.approx(5.1)
     recording = client.get("/api/catalog").get_json()["recordings"][0]

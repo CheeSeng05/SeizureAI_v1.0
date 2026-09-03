@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from sqlalchemy import select
 
@@ -44,7 +47,7 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
                 ),
             )
 
-    def fake_run(command, cwd, check):
+    def fake_run(command, cwd, check, stdout, stderr):
         config_path = Path(command[command.index("--config") + 1])
         import yaml
 
@@ -63,13 +66,13 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
     monkeypatch.setattr("fyp_data_platform.integrations.seizure_model.subprocess.run", fake_run)
     progress = []
     result = SeizureModelIntegration(settings, storage, factory).run(
-        "test", "r1", mode="video", progress_callback=progress.append
+        "test", "r1", mode="video", require_labels=True, progress_callback=progress.append
     )
 
     assert result.status == "completed"
     assert result.runtime["timings"]["total_sec"] >= 0
     assert result.runtime["timings"]["model_pipeline_sec"] >= 0
-    assert result.artifacts[0]["relative_path"] == "video_only/metrics.json"
+    assert {item["relative_path"] for item in result.artifacts} == {"pipeline.log", "video_only/metrics.json"}
     assert [item["stage"] for item in progress] == [
         "input_staging", "input_staging", "configuration", "configuration",
         "model_loading", "artifact_persistence", "artifact_persistence",
@@ -78,7 +81,7 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
         run = session.get(ModelRun, result.run_id)
         outputs = session.scalars(select(StoredFile).where(StoredFile.role == "model-output")).all()
     assert run is not None and run.status == "completed"
-    assert len(outputs) == 1
+    assert len(outputs) == 2
 
 
 def test_video_model_run_allows_prediction_without_labels(
@@ -88,7 +91,13 @@ def test_video_model_run_allows_prediction_without_labels(
     storage = LocalStorage(settings.local_storage_root)
     video = tmp_path / "small.mp4"
     video.write_bytes(b"video")
+    labels = tmp_path / "attached.csv"
+    labels.write_text(
+        "recording_id,patient_id,start_sec,end_sec,label\nr2,p1,0,999,1\n",
+        encoding="utf-8",
+    )
     video_meta = storage.put_file(video, "datasets/test/source/video-only.mp4")
+    label_meta = storage.put_file(labels, "datasets/test/source/attached.csv")
     with factory.begin() as session:
         repo = CatalogRepository(session)
         repo.dataset("test", name="Test", version=None, description=None, source_url=None, license=None, metadata_json={})
@@ -104,8 +113,15 @@ def test_video_model_run_allows_prediction_without_labels(
             size_bytes=video_meta.size_bytes, sha256=video_meta.sha256,
             media_type=None, metadata_json={},
         )
+        repo.stored_file(
+            "test", "manual/p1/r2/attached.csv", recording_id=recording.id,
+            role="ground-truth", modality="labels", storage_backend="local",
+            storage_key="datasets/test/source/attached.csv", payload_state="stored",
+            size_bytes=label_meta.size_bytes, sha256=label_meta.sha256,
+            media_type=None, metadata_json={"label_identity": {"patient_id": "p1"}},
+        )
 
-    def fake_run(command, cwd, check):
+    def fake_run(command, cwd, check, stdout, stderr):
         config_path = Path(command[command.index("--config") + 1])
         import yaml
 
@@ -121,7 +137,41 @@ def test_video_model_run_allows_prediction_without_labels(
     result = SeizureModelIntegration(settings, storage, factory).run("test", "r2", mode="video")
 
     assert result.status == "completed"
-    assert result.artifacts[0]["relative_path"] == "video_only/metrics.json"
+    assert "video_only/metrics.json" in {item["relative_path"] for item in result.artifacts}
+
+
+def test_legacy_csv_recording_selector_and_subprocess_diagnostics(tmp_path, settings, migrated_db, monkeypatch):
+    _, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    video = tmp_path / 'video.mp4'
+    video.write_bytes(b'video')
+    labels = tmp_path / 'labels.csv'
+    labels.write_text('recording_id,patient_id,start_sec,end_sec,label\nstitched-test-001,p1,0,5,0\nstitched-test-001,p1,5,10,1\n', encoding='utf-8')
+    with factory.begin() as session:
+        repo = CatalogRepository(session)
+        repo.dataset('test', name='Test', version=None, description=None, source_url=None, license=None, metadata_json={})
+        patient, _ = repo.patient('test', 'p1', metadata_json={})
+        recording, _ = repo.recording('test', 'Stitched_Video', patient_id=patient.id, session_id=None, task=None, modality='video', duration_sec=None, video_fps=None, start_datetime=None, metadata_json={})
+        for modality, path in [('video', video), ('labels', labels)]:
+            key = f'datasets/test/source/{path.name}'
+            meta = storage.put_file(path, key)
+            repo.stored_file('test', path.name, recording_id=recording.id, role='source-media', modality=modality, storage_backend='local', storage_key=key, payload_state='stored', size_bytes=meta.size_bytes, sha256=meta.sha256, media_type=None, metadata_json={'label_identity': {'patient_id': 'P1'}} if modality == 'labels' else {})
+
+    def fail(command, cwd, check, stdout, stderr):
+        import yaml
+        config = yaml.safe_load(Path(command[command.index('--config') + 1]).read_text())
+        assert config['data']['video_provenance']['recording_id'] == 'stitched-test-001'
+        stdout.write(b'Traceback: specific model failure\nValueError: bad test input\n')
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr('fyp_data_platform.integrations.seizure_model.subprocess.run', fail)
+    with pytest.raises(RuntimeError, match='bad test input'):
+        SeizureModelIntegration(settings, storage, factory).run('test', 'Stitched_Video', require_labels=True)
+    with factory() as session:
+        run = session.scalar(select(ModelRun))
+        assert run.status == 'failed'
+        assert 'bad test input' in run.metrics_json['error']
+        assert run.metrics_json['artifacts'][0]['relative_path'] == 'pipeline.log'
 
 
 def test_video_model_run_can_require_labels_for_development_mode(

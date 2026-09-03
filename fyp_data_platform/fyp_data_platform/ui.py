@@ -174,7 +174,8 @@ def _register_eeg(
 
 
 def _validate_label_upload(
-    upload: FileStorage, *, patient_id: str, seizure_id: str, seizure_type: str
+    upload: FileStorage, *, patient_id: str, seizure_id: str, seizure_type: str,
+    recording_id: str = "",
 ) -> dict[str, Any]:
     filename = secure_filename(upload.filename or "")
     suffix = Path(filename).suffix.lower()
@@ -200,9 +201,16 @@ def _validate_label_upload(
             ]
         if not records:
             raise ValueError(f"No interval label rows matched Patient ID {patient_id}.")
+        recording_ids = {str(row.get('recording_id') or '').strip() for row in records}
+        if len(recording_ids) > 1:
+            records = [row for row in records if str(row.get('recording_id') or '').strip().casefold() == recording_id.casefold()]
+            if not recording_id or not records:
+                raise ValueError("Label CSV contains multiple recordings. Enter a Recording ID matching the CSV.")
+        selected_recording = str(records[0].get('recording_id') or '').strip() or None
         seizure_rows = [record for record in records if int(record["label"]) == 1]
         return {
             "patient_id": patient_id,
+            "recording_id": selected_recording,
             "seizure_id": seizure_id or None,
             "seizure_type": seizure_type or None,
             "label_format": "interval_csv",
@@ -676,6 +684,7 @@ def create_app(config_path: str | None = None) -> Any:
                 label_identity = _validate_label_upload(
                     label_upload,
                     patient_id=patient_id,
+                    recording_id=recording_id,
                     seizure_id=str(request.form.get("seizure_id", "")).strip(),
                     seizure_type=str(request.form.get("seizure_type", "")).strip(),
                 )

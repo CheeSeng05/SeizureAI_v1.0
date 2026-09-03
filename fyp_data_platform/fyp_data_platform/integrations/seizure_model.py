@@ -84,7 +84,12 @@ class SeizureModelIntegration:
         }
         resolved = {
             "video": video_key or (resolved_rows["video"].storage_key if resolved_rows["video"] else None),
-            "labels": labels_key or (resolved_rows["labels"].storage_key if resolved_rows["labels"] else None),
+            # A recording may have labels registered, but prediction-only runs
+            # must not load or validate them. Labels only participate when the
+            # caller explicitly requests evaluation (or strict multimodal).
+            "labels": (
+                labels_key or (resolved_rows["labels"].storage_key if resolved_rows["labels"] else None)
+            ) if require_labels or mode == "strict_multimodal" else None,
             "eeg": eeg_key or (resolved_rows["eeg"].storage_key if resolved_rows["eeg"] else None),
         }
         if mode == "video":
@@ -114,8 +119,30 @@ class SeizureModelIntegration:
         stage_started = time.perf_counter()
         label_identity = (
             (resolved_rows["labels"].metadata_json or {}).get("label_identity")
-            if resolved_rows["labels"] else None
+            if "labels" in staged and resolved_rows["labels"] else None
         )
+        # Older uploads did not store the CSV recording selector. Revalidate
+        # their staged labels to recover it without requiring a new upload.
+        if "labels" in staged and staged["labels"].suffix.lower() == ".csv":
+            from seizure_multimodal.data_inspection import resolved_interval_label_records
+
+            label_identity = dict(label_identity or {})
+            records = resolved_interval_label_records(staged["labels"])
+            patient = str(label_identity.get("patient_id") or "").strip().casefold()
+            if patient and any(row.get("resolved_PatID") for row in records):
+                records = [row for row in records if str(row.get("resolved_PatID") or "").strip().casefold() == patient]
+            if not records:
+                raise ValueError("No interval label rows match the registered patient.")
+            selectors = {str(row.get("recording_id") or "").strip() for row in records}
+            selector = str(label_identity.get("recording_id") or "").strip()
+            if not selector:
+                if len(selectors) == 1:
+                    selector = next(iter(selectors))
+                elif recording_id in selectors:
+                    selector = recording_id
+                else:
+                    raise ValueError("Label CSV contains multiple recordings; re-upload with a matching Recording ID.")
+            label_identity["recording_id"] = selector or None
         config = self._build_config(
             project, output_root.resolve(), staged, label_identity=label_identity
         )
@@ -163,7 +190,20 @@ class SeizureModelIntegration:
             monitor = threading.Thread(target=monitor_progress, name=f"progress-{run_id}", daemon=True)
             monitor.start()
             try:
-                subprocess.run(command, cwd=project, check=True)
+                output_root.mkdir(parents=True, exist_ok=True)
+                log_path = output_root / "pipeline.log"
+                with log_path.open("wb") as log:
+                    try:
+                        subprocess.run(command, cwd=project, check=True, stdout=log, stderr=subprocess.STDOUT)
+                    except subprocess.CalledProcessError as error:
+                        log.flush()
+                        with log_path.open("rb") as captured:
+                            captured.seek(max(0, log_path.stat().st_size - 16384))
+                            detail = captured.read().decode("utf-8", errors="replace").strip()
+                        raise RuntimeError(
+                            f"Model process exited with status {error.returncode}.\n"
+                            + (detail or "No diagnostic output was produced.")
+                        ) from error
             finally:
                 monitor_stop.set()
                 monitor.join(timeout=2)
@@ -189,8 +229,14 @@ class SeizureModelIntegration:
             )
         except Exception as error:
             timings["total_sec"] = time.perf_counter() - total_started
+            # Retain the traceback/log and any partial outputs for diagnosis.
+            try:
+                artifacts = self._upload_outputs(dataset_id, recording_id, run_id, output_root)
+                metrics = self._collect_metrics(output_root)
+            except Exception:
+                artifacts, metrics = [], {}
             self._finish_run(
-                run_id, "failed", {}, [], str(error),
+                run_id, "failed", metrics, artifacts, str(error),
                 {"timings": timings, "compute": run_compute},
             )
             raise
@@ -235,6 +281,8 @@ class SeizureModelIntegration:
                     "seizure_id": label_identity.get("seizure_id"),
                     "seizure_type": label_identity.get("seizure_type"),
                 })
+                if label_identity.get("recording_id"):
+                    data["video_provenance"]["recording_id"] = label_identity["recording_id"]
         for section, keys in {
             "video_encoder": ("source", "checkpoint", "dynamic_partition", "pose_source", "pose_checkpoint"),
             "eeg_encoder": ("checkpoint",),

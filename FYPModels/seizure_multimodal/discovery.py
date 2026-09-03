@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .checkpoints.provenance import sha256_file
-from .data_inspection import inspect_eeg_csv, inspect_label_workbook, inspect_mp4
+from .data_inspection import inspect_eeg_csv, inspect_interval_label_csv, inspect_label_workbook, inspect_mp4
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,9 @@ def discover_sources(root: str | Path, config: Mapping[str, Any]) -> list[Modali
                 label_path=str(labels) if labels else None,
                 patient_id=str(patient_id) if patient_id else None,
                 recording_id=(
-                    f"{patient_id}_{provenance.get('seizure_id')}_{provenance.get('seizure_type')}"
+                    str(provenance['recording_id'])
+                    if expected_hash == actual_hash and provenance.get('recording_id')
+                    else f"{patient_id}_{provenance.get('seizure_id')}_{provenance.get('seizure_type')}"
                     if patient_id
                     else video.stem
                 ),
@@ -128,7 +130,10 @@ def inspection_bundle(root: str | Path, config: Mapping[str, Any]) -> dict[str, 
             "hash_verified": actual_hash == str(provenance.get("expected_sha256", "")).lower(),
         }
         payload["video_labels"] = (
-            inspect_label_workbook(video_source.label_path) if video_source.label_path else None
+            (inspect_interval_label_csv(video_source.label_path)
+             if Path(video_source.label_path).suffix.lower() == '.csv'
+             else inspect_label_workbook(video_source.label_path))
+            if video_source.label_path else None
         )
     if eeg_source and eeg_source.eeg_path:
         payload["eeg_csv"] = inspect_eeg_csv(eeg_source.eeg_path)
