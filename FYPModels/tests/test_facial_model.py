@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from seizure_multimodal.facial_region_hybrid.facial_model import (
+from seizure_multimodal.facial_resnet.facial_model import (
     ResNet50GRUAttention,
 )
 

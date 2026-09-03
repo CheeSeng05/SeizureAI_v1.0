@@ -48,7 +48,7 @@ pipeline on one seizure video before preparing the complete dataset:
 
 ```bash
 MPLCONFIGDIR=/tmp/mpl-facial \
-python -m seizure_multimodal.facial_region_hybrid.face_preprocess \
+python -m seizure_multimodal.facial_resnet.face_preprocess \
   "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
   --output results/facial_head_smoke \
   --sample-id seizure_S1_5_136 \
@@ -240,7 +240,7 @@ layer; the BiGRU, multi-head attention, and classifier are trainable.
 Train it on a patient-disjoint preprocessed manifest with:
 
 ```bash
-python -m seizure_multimodal.facial_region_hybrid.train \
+python -m seizure_multimodal.facial_resnet.train \
   --manifest results/facial_patient_70_30/video_manifest.csv \
   --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
   --epochs 20 \
@@ -386,7 +386,7 @@ two-way manifests before using this workflow.
 1. Create and preprocess a 70/15/15 patient split:
 
 ```bash
-python -m seizure_multimodal.facial_region_hybrid.prepare_dataset \
+python -m seizure_multimodal.facial_resnet.prepare_dataset \
   --dataset-root "datasets/Seizure videos of epilepsy patients" \
   --output results/facial_patient_70_15_15 \
   --split-unit patient --train-fraction 0.70 --validation-fraction 0.15
@@ -396,7 +396,7 @@ python -m seizure_multimodal.facial_region_hybrid.prepare_dataset \
 loads `test`:
 
 ```bash
-python -m seizure_multimodal.facial_region_hybrid.train \
+python -m seizure_multimodal.facial_resnet.train \
   --manifest results/facial_patient_70_15_15/video_manifest.csv \
   --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth
 ```
@@ -410,7 +410,7 @@ as invented seizure offsets.
 4. Evaluate isolated labelled clips without inventing temporal annotations:
 
 ```bash
-python -m seizure_multimodal.facial_region_hybrid.evaluation \
+python -m seizure_multimodal.facial_resnet.evaluation \
   --mode clip \
   --manifest results/facial_patient_70_15_15/video_manifest.csv \
   --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
@@ -427,7 +427,7 @@ monitoring records.
 event mode:
 
 ```bash
-python -m seizure_multimodal.facial_region_hybrid.evaluation \
+python -m seizure_multimodal.facial_resnet.evaluation \
   --mode event \
   --manifest results/facial_patient_70_15_15/video_manifest.csv \
   --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \

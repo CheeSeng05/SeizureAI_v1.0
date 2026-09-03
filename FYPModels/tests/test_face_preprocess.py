@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from seizure_multimodal.facial_region_hybrid.face_preprocess import (
+from seizure_multimodal.facial_resnet.face_preprocess import (
     _pose_head_box,
     _pose_head_center,
     _select_patient_pose,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from seizure_multimodal.facial_region_hybrid.evaluation import (
+from seizure_multimodal.facial_resnet.evaluation import (
     evaluate_clip_records,
     evaluate_records,
     metric_summary,
