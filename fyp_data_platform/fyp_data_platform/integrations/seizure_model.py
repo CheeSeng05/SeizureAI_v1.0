@@ -4,16 +4,19 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from sqlalchemy import select
 
 from fyp_data_platform.config.settings import Settings
+from fyp_data_platform.compute import compute_info
 from fyp_data_platform.db.models import ModelRun, StoredFile
 from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.storage.base import StorageBackend
@@ -32,6 +35,7 @@ class ModelRunResult:
     artifacts: list[dict[str, Any]]
     metrics: dict[str, Any]
     command: list[str]
+    runtime: dict[str, Any]
 
 
 class SeizureModelIntegration:
@@ -53,7 +57,13 @@ class SeizureModelIntegration:
         eeg_key: str | None = None,
         require_labels: bool = False,
         cleanup: bool = False,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelRunResult:
+        total_started = time.perf_counter()
+        timings: dict[str, float] = {}
+        def progress(stage: str, label: str, percent: float, **extra: Any) -> None:
+            if progress_callback:
+                progress_callback({"stage": stage, "stage_label": label, "percent": percent, **extra})
         if mode not in {"video", "eeg", "unimodal", "strict_multimodal"}:
             raise ValueError("Managed runs support video, eeg, unimodal, or strict_multimodal.")
         project = self.settings.model_project_path.resolve()
@@ -66,10 +76,16 @@ class SeizureModelIntegration:
         output_root = run_root / "results"
         input_root.mkdir(parents=True, exist_ok=True)
 
+        progress("input_staging", "Preparing input files", 0.0)
+        stage_started = time.perf_counter()
+        resolved_rows = {
+            name: self._resolve_file(dataset_id, recording_id, name)
+            for name in ("video", "labels", "eeg")
+        }
         resolved = {
-            "video": video_key or self._resolve_key(dataset_id, recording_id, "video"),
-            "labels": labels_key or self._resolve_key(dataset_id, recording_id, "labels"),
-            "eeg": eeg_key or self._resolve_key(dataset_id, recording_id, "eeg"),
+            "video": video_key or (resolved_rows["video"].storage_key if resolved_rows["video"] else None),
+            "labels": labels_key or (resolved_rows["labels"].storage_key if resolved_rows["labels"] else None),
+            "eeg": eeg_key or (resolved_rows["eeg"].storage_key if resolved_rows["eeg"] else None),
         }
         if mode == "video":
             required = {"video", "labels"} if require_labels else {"video"}
@@ -91,8 +107,20 @@ class SeizureModelIntegration:
                 destination = input_root / f"{name}{Path(key).suffix}"
                 self.storage.download_file(key, destination)
                 staged[name] = destination.resolve()
+        timings["input_staging_sec"] = time.perf_counter() - stage_started
+        progress("input_staging", "Preparing input files", 100.0)
 
-        config = self._build_config(project, output_root.resolve(), staged)
+        progress("configuration", "Preparing model configuration", 0.0)
+        stage_started = time.perf_counter()
+        label_identity = (
+            (resolved_rows["labels"].metadata_json or {}).get("label_identity")
+            if resolved_rows["labels"] else None
+        )
+        config = self._build_config(
+            project, output_root.resolve(), staged, label_identity=label_identity
+        )
+        progress_path = run_root / "progress.json"
+        config.setdefault("testing", {})["progress_file"] = str(progress_path.resolve())
         config_path = run_root / "inference.yaml"
         config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         python = str(self.settings.model_python or Path(sys.executable))
@@ -100,6 +128,9 @@ class SeizureModelIntegration:
             python, "-m", "seizure_multimodal", "test", "--mode", mode,
             "--config", str(config_path.resolve()), "--root", str(project), "--device", "auto",
         ]
+        timings["configuration_sec"] = time.perf_counter() - stage_started
+        progress("configuration", "Preparing model configuration", 100.0)
+        run_compute = compute_info()
         self._create_run(
             run_id,
             dataset_id,
@@ -108,31 +139,67 @@ class SeizureModelIntegration:
             config,
             command,
             require_labels=require_labels,
+            run_compute=run_compute,
         )
         try:
-            subprocess.run(command, cwd=project, check=True)
+            stage_started = time.perf_counter()
+            progress("model_loading", "Loading model and input metadata", 0.0)
+            monitor_stop = threading.Event()
+
+            def monitor_progress() -> None:
+                last_payload = ""
+                while not monitor_stop.wait(0.5):
+                    try:
+                        payload_text = progress_path.read_text(encoding="utf-8")
+                        if payload_text == last_payload:
+                            continue
+                        payload = json.loads(payload_text)
+                        if isinstance(payload, dict) and progress_callback:
+                            progress_callback(payload)
+                        last_payload = payload_text
+                    except (FileNotFoundError, json.JSONDecodeError, OSError):
+                        continue
+
+            monitor = threading.Thread(target=monitor_progress, name=f"progress-{run_id}", daemon=True)
+            monitor.start()
+            try:
+                subprocess.run(command, cwd=project, check=True)
+            finally:
+                monitor_stop.set()
+                monitor.join(timeout=2)
+            timings["model_pipeline_sec"] = time.perf_counter() - stage_started
+            progress("artifact_persistence", "Saving results and metrics", 0.0)
+            stage_started = time.perf_counter()
             artifacts = self._upload_outputs(dataset_id, recording_id, run_id, output_root)
             metrics = self._collect_metrics(output_root)
+            timings["artifact_persistence_sec"] = time.perf_counter() - stage_started
+            progress("artifact_persistence", "Saving results and metrics", 100.0)
             workflow_statuses = {
                 value.get("status")
                 for value in metrics.values()
                 if isinstance(value, dict) and value.get("status")
             }
             status = "blocked" if "blocked" in workflow_statuses else "completed"
-            self._finish_run(run_id, status, metrics, artifacts, None)
+            timings["total_sec"] = time.perf_counter() - total_started
+            runtime = {"timings": timings, "compute": run_compute}
+            self._finish_run(run_id, status, metrics, artifacts, None, runtime)
             result = ModelRunResult(
                 run_id, dataset_id, recording_id, mode, status,
-                self._output_prefix(dataset_id, recording_id, run_id), artifacts, metrics, command,
+                self._output_prefix(dataset_id, recording_id, run_id), artifacts, metrics, command, runtime,
             )
         except Exception as error:
-            self._finish_run(run_id, "failed", {}, [], str(error))
+            timings["total_sec"] = time.perf_counter() - total_started
+            self._finish_run(
+                run_id, "failed", {}, [], str(error),
+                {"timings": timings, "compute": run_compute},
+            )
             raise
         finally:
             if cleanup and run_root.exists():
                 self._safe_cleanup(run_root)
         return result
 
-    def _resolve_key(self, dataset_id: str, recording_id: str, modality: str) -> str | None:
+    def _resolve_file(self, dataset_id: str, recording_id: str, modality: str) -> StoredFile | None:
         with self.session_factory() as session:
             row = session.scalar(
                 select(StoredFile).where(
@@ -142,9 +209,12 @@ class SeizureModelIntegration:
                     StoredFile.payload_state == "stored",
                 ).order_by(StoredFile.created_at.desc())
             )
-        return row.storage_key if row else None
+        return row
 
-    def _build_config(self, project: Path, output: Path, staged: dict[str, Path]) -> dict[str, Any]:
+    def _build_config(
+        self, project: Path, output: Path, staged: dict[str, Path],
+        *, label_identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         config = yaml.safe_load((project / "configs" / "inference.yaml").read_text(encoding="utf-8"))
         config["training"] = {"enabled": False}
         config.setdefault("testing", {})["output_directory"] = str(output)
@@ -152,6 +222,19 @@ class SeizureModelIntegration:
         data["video"] = str(staged.get("video", project / "__missing_video__"))
         data["video_labels"] = str(staged["labels"]) if "labels" in staged else None
         data["eeg_csv"] = str(staged.get("eeg", project / "__missing_eeg__"))
+        # Never carry the sample recording's identity into a catalogued upload.
+        # A matching label workbook may identify its own single annotation row.
+        if "video" in staged:
+            data["video_provenance"] = {
+                "expected_sha256": sha256_file(staged["video"]),
+                "source": "fyp_data_platform catalog",
+            }
+            if label_identity:
+                data["video_provenance"].update({
+                    "patient_id": label_identity.get("patient_id"),
+                    "seizure_id": label_identity.get("seizure_id"),
+                    "seizure_type": label_identity.get("seizure_type"),
+                })
         for section, keys in {
             "video_encoder": ("source", "checkpoint", "dynamic_partition", "pose_source", "pose_checkpoint"),
             "eeg_encoder": ("checkpoint",),
@@ -209,6 +292,7 @@ class SeizureModelIntegration:
         command: list[str],
         *,
         require_labels: bool,
+        run_compute: dict[str, Any],
     ) -> None:
         with self.session_factory.begin() as session:
             CatalogRepository(session).model_run(
@@ -220,17 +304,25 @@ class SeizureModelIntegration:
                     "command": command,
                     "config": config,
                     "require_labels": require_labels,
+                    "compute": run_compute,
                 },
                 metrics_json={}, artifact_file_id=None, started_at=datetime.now(timezone.utc), completed_at=None,
             )
 
-    def _finish_run(self, run_id: str, status: str, metrics: dict[str, Any], artifacts: list[dict[str, Any]], error: str | None) -> None:
+    def _finish_run(
+        self, run_id: str, status: str, metrics: dict[str, Any],
+        artifacts: list[dict[str, Any]], error: str | None,
+        runtime: dict[str, Any],
+    ) -> None:
         with self.session_factory.begin() as session:
             row = session.get(ModelRun, run_id)
             if row is None:
                 raise LookupError(f"Model run disappeared: {run_id}")
             row.status = status
-            row.metrics_json = {"metrics": metrics, "artifacts": artifacts, "error": error}
+            row.metrics_json = {
+                "metrics": metrics, "artifacts": artifacts,
+                "error": error, "runtime": runtime,
+            }
             row.completed_at = datetime.now(timezone.utc)
 
     def _safe_cleanup(self, run_root: Path) -> None:

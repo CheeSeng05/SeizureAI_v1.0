@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 
 import boto3
 from botocore.exceptions import ClientError
@@ -26,6 +27,12 @@ class FakeS3:
     def download_file(self, bucket, key, destination):
         Path(destination).write_bytes(self.objects[(bucket, key)][0])
 
+    def get_object(self, Bucket, Key, Range):
+        start, end = (int(value) for value in Range.removeprefix("bytes=").split("-"))
+        stream = BytesIO(self.objects[(Bucket, Key)][0][start : end + 1])
+        stream.iter_chunks = lambda chunk_size: iter(lambda: stream.read(chunk_size), b"")
+        return {"Body": stream}
+
 
 def test_s3_uses_checksum_metadata_encryption_and_skips_duplicate(tmp_path: Path) -> None:
     source = tmp_path / "object.bin"
@@ -39,6 +46,7 @@ def test_s3_uses_checksum_metadata_encryption_and_skips_duplicate(tmp_path: Path
     _, metadata, extra = client.objects[("private-bucket", "fyp/dataset/object.bin")]
     assert metadata["sha256"] == first.sha256
     assert extra["ServerSideEncryption"] == "AES256"
+    assert b"".join(storage.iter_bytes(first.key, start=1, end=4, chunk_size=2)) == b"aylo"
 
 
 def test_s3_passes_local_endpoint_and_uses_path_addressing(monkeypatch) -> None:

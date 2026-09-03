@@ -20,7 +20,6 @@ from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.db.session import create_engine_and_session
 from fyp_data_platform.ingest.bids import discover_bids_files
 from fyp_data_platform.ingest.service import ingest_seizeit2, load_dataset_spec
-from fyp_data_platform.integrations.body_pose import BodyPoseIntegration
 from fyp_data_platform.integrations.seizure_model import SeizureModelIntegration
 from fyp_data_platform.storage.factory import create_storage
 from fyp_data_platform.storage.integrity import sha256_file
@@ -169,18 +168,6 @@ def cmd_register_media(args: argparse.Namespace) -> None:
         engine.dispose()
 
 
-def cmd_body_run(args: argparse.Namespace) -> None:
-    settings, engine, session_factory = _settings_and_db(args.config)
-    try:
-        integration = BodyPoseIntegration(settings, create_storage(settings), session_factory)
-        result = integration.run(
-            args.dataset_id, args.recording_id, args.source_key, cleanup=args.cleanup
-        )
-        _print(asdict(result))
-    finally:
-        engine.dispose()
-
-
 def cmd_model_run(args: argparse.Namespace) -> None:
     settings, engine, session_factory = _settings_and_db(args.config)
     try:
@@ -292,12 +279,6 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--debug", action="store_true")
     ui.set_defaults(handler=cmd_ui)
 
-    body = subparsers.add_parser("body-run", help="Legacy BodyPose command; retained for compatibility")
-    body.add_argument("--dataset-id", required=True)
-    body.add_argument("--recording-id", required=True)
-    body.add_argument("--source-key", help="Optional; otherwise resolve the stored video in PostgreSQL")
-    body.add_argument("--cleanup", action="store_true", help="Remove the per-run work directory after success")
-    body.set_defaults(handler=cmd_body_run)
     return parser
 
 

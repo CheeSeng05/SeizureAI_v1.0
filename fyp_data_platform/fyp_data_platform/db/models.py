@@ -150,7 +150,7 @@ class TemporalWindow(TimestampMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    # Exact deterministic fusion key exported by body_pose.build_dataset.
+    # Exact deterministic fusion key exported by the synchronized model pipeline.
     window_id: Mapped[str] = mapped_column(String(300), nullable=False)
     dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id"), nullable=False, index=True)
     recording_id: Mapped[str] = mapped_column(ForeignKey("recordings.id"), nullable=False)

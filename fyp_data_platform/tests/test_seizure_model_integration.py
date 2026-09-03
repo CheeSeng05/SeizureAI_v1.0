@@ -37,7 +37,11 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
             repo.stored_file(
                 "test", relative, recording_id=recording.id, role="source-media", modality=modality,
                 storage_backend="local", storage_key=key, payload_state="stored",
-                size_bytes=meta.size_bytes, sha256=meta.sha256, media_type=None, metadata_json={},
+                size_bytes=meta.size_bytes, sha256=meta.sha256, media_type=None,
+                metadata_json=(
+                    {"label_identity": {"patient_id": "p1", "seizure_id": "Sz1", "seizure_type": "PG"}}
+                    if modality == "labels" else {}
+                ),
             )
 
     def fake_run(command, cwd, check):
@@ -45,15 +49,31 @@ def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
         import yaml
 
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["data"]["video_provenance"] == {
+            "expected_sha256": video_meta.sha256,
+            "source": "fyp_data_platform catalog",
+            "patient_id": "p1",
+            "seizure_id": "Sz1",
+            "seizure_type": "PG",
+        }
         result_dir = Path(config["testing"]["output_directory"]) / "video_only"
         result_dir.mkdir(parents=True)
         (result_dir / "metrics.json").write_text(json.dumps({"sensitivity": 0.8}), encoding="utf-8")
 
     monkeypatch.setattr("fyp_data_platform.integrations.seizure_model.subprocess.run", fake_run)
-    result = SeizureModelIntegration(settings, storage, factory).run("test", "r1", mode="video")
+    progress = []
+    result = SeizureModelIntegration(settings, storage, factory).run(
+        "test", "r1", mode="video", progress_callback=progress.append
+    )
 
     assert result.status == "completed"
+    assert result.runtime["timings"]["total_sec"] >= 0
+    assert result.runtime["timings"]["model_pipeline_sec"] >= 0
     assert result.artifacts[0]["relative_path"] == "video_only/metrics.json"
+    assert [item["stage"] for item in progress] == [
+        "input_staging", "input_staging", "configuration", "configuration",
+        "model_loading", "artifact_persistence", "artifact_persistence",
+    ]
     with factory() as session:
         run = session.get(ModelRun, result.run_id)
         outputs = session.scalars(select(StoredFile).where(StoredFile.role == "model-output")).all()
