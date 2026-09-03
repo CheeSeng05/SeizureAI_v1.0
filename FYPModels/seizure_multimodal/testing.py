@@ -189,10 +189,16 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
     metrics["evaluated_windows"] = len(valid_rows)
     metrics["excluded_windows"] = len(rows) - len(valid_rows)
     metrics["annotation_alignment_status"] = annotation["alignment_status"]
-    metrics["classification_label_policy"] = (
-        "VSViG source policy: 0 through EEG onset, transition interval excluded, "
-        "1 from clinical onset onward; no seizure offset was invented."
-    )
+    if annotation.get("label_source") == "interval_csv":
+        metrics["classification_label_policy"] = (
+            "Timestamped interval CSV policy: each model window receives the binary label "
+            "with the largest time overlap; exact ties or uncovered windows are excluded."
+        )
+    else:
+        metrics["classification_label_policy"] = (
+            "VSViG source policy: 0 through EEG onset, transition interval excluded, "
+            "1 from clinical onset onward; no seizure offset was invented."
+        )
     if not rows:
         return metrics
     patient_id = annotation.get("patient_id") or "UNKNOWN"
@@ -231,7 +237,11 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
             metrics["onset_mean_absolute_error_sec"] = "N/A"
     metrics["offset_mean_signed_error_sec"] = "N/A"
     metrics["offset_mean_absolute_error_sec"] = "N/A"
-    metrics["offset_reason"] = "Label.xlsx has no seizure offset annotation."
+    metrics["offset_reason"] = (
+        "Interval CSV may contain multiple seizure offsets; aggregate offset error is not implemented."
+        if annotation.get("label_source") == "interval_csv"
+        else "Label.xlsx has no seizure offset annotation."
+    )
     return metrics
 
 

@@ -251,6 +251,88 @@ def resolved_label_records(path: str | Path) -> list[dict[str, Any]]:
     return resolved
 
 
+def _required_csv_value(row: dict[str, Any], column: str, row_number: int) -> str:
+    value = row.get(column)
+    if value is None or str(value).strip() == "":
+        raise ValueError(f"Label CSV row {row_number} is missing required column {column!r}")
+    return str(value).strip()
+
+
+def _binary_label(value: Any, row_number: int) -> int:
+    normalized = str(value).strip().casefold()
+    if normalized in {"1", "s", "seizure", "ictal", "true", "yes"}:
+        return 1
+    if normalized in {"0", "n", "non_seizure", "non-seizure", "nonictal", "non_ictal", "false", "no"}:
+        return 0
+    raise ValueError(
+        f"Label CSV row {row_number} has unsupported label {value!r}; use 0/1 or N/S."
+    )
+
+
+def inspect_interval_label_csv(path: str | Path) -> dict[str, Any]:
+    csv_path = Path(path).resolve()
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        columns = reader.fieldnames or []
+        required = {"start_sec", "end_sec", "label"}
+        missing = sorted(required - set(columns))
+        if missing:
+            raise ValueError(
+                "Label CSV must contain required columns: "
+                + ", ".join(sorted(required))
+            )
+        records: list[dict[str, Any]] = []
+        label_counts = {0: 0, 1: 0}
+        for row_number, row in enumerate(reader, start=2):
+            start = float(_required_csv_value(row, "start_sec", row_number))
+            end = float(_required_csv_value(row, "end_sec", row_number))
+            if end <= start:
+                raise ValueError(
+                    f"Label CSV row {row_number} must have end_sec greater than start_sec."
+                )
+            label = _binary_label(_required_csv_value(row, "label", row_number), row_number)
+            label_counts[label] += 1
+            records.append(
+                {
+                    **row,
+                    "start_sec": start,
+                    "end_sec": end,
+                    "label": label,
+                    "row_number": row_number,
+                }
+            )
+    if not records:
+        raise ValueError("Label CSV does not contain any data rows.")
+    return {
+        "path": str(csv_path),
+        "columns": columns,
+        "data_rows": len(records),
+        "records": records,
+        "label_values": {str(key): value for key, value in label_counts.items() if value},
+        "time_range_sec": [min(row["start_sec"] for row in records), max(row["end_sec"] for row in records)],
+    }
+
+
+def resolved_interval_label_records(path: str | Path) -> list[dict[str, Any]]:
+    """Read timestamped binary video labels from CSV.
+
+    Required columns are start_sec, end_sec, and label. Optional identity columns
+    such as patient_id, recording_id, seizure_id, and seizure_type are preserved.
+    """
+
+    inspection = inspect_interval_label_csv(path)
+    return [
+        {
+            **record,
+            "resolved_PatID": record.get("patient_id") or record.get("PatID"),
+            "resolved_Seizure Type": record.get("seizure_type") or record.get("Seizure Type"),
+            "#Seizure": record.get("seizure_id") or record.get("#Seizure"),
+            "resolution_policy": "timestamped interval CSV; no workbook forward-fill required",
+        }
+        for record in inspection["records"]
+    ]
+
+
 def inspect_eeg_csv(path: str | Path) -> dict[str, Any]:
     csv_path = Path(path).resolve()
     with csv_path.open("r", encoding="utf-8-sig", newline="") as stream:

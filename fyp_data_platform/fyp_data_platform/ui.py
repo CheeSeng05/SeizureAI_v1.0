@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import func, select
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
-from seizure_multimodal.data_inspection import resolved_label_records
+from seizure_multimodal.data_inspection import resolved_interval_label_records, resolved_label_records
 
 from fyp_data_platform.config.settings import PROJECT_ROOT, Settings, load_settings
 from fyp_data_platform.compute import compute_info
@@ -29,7 +29,7 @@ from fyp_data_platform.storage.keys import safe_entity, source_key
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
 ALLOWED_EEG_EXTENSIONS = {".csv"}
-ALLOWED_LABEL_EXTENSIONS = {".xlsx"}
+ALLOWED_LABEL_EXTENSIONS = {".csv", ".xlsx"}
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
 
@@ -177,15 +177,41 @@ def _validate_label_upload(
     upload: FileStorage, *, patient_id: str, seizure_id: str, seizure_type: str
 ) -> dict[str, Any]:
     filename = secure_filename(upload.filename or "")
-    if Path(filename).suffix.lower() not in ALLOWED_LABEL_EXTENSIONS:
-        raise ValueError("Ground-truth labels must be an .xlsx workbook.")
-    if not all((patient_id, seizure_id, seizure_type)):
-        raise ValueError("Patient ID, seizure ID, and seizure type are required with labels.")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_LABEL_EXTENSIONS:
+        raise ValueError("Ground-truth labels must be a .csv interval file or .xlsx workbook.")
     with tempfile.TemporaryDirectory(prefix="fyp-ui-label-check-") as directory:
         temporary = Path(directory) / filename
         upload.save(temporary)
-        records = resolved_label_records(temporary)
+        if suffix == ".csv":
+            records = resolved_interval_label_records(temporary)
+        else:
+            if not all((patient_id, seizure_id, seizure_type)):
+                raise ValueError(
+                    "Patient ID, seizure ID, and seizure type are required with workbook labels."
+                )
+            records = resolved_label_records(temporary)
     upload.stream.seek(0)
+    if suffix == ".csv":
+        if any(record.get("resolved_PatID") for record in records):
+            records = [
+                record for record in records
+                if str(record.get("resolved_PatID") or "").strip().casefold() == patient_id.casefold()
+            ]
+        if not records:
+            raise ValueError(f"No interval label rows matched Patient ID {patient_id}.")
+        seizure_rows = [record for record in records if int(record["label"]) == 1]
+        return {
+            "patient_id": patient_id,
+            "seizure_id": seizure_id or None,
+            "seizure_type": seizure_type or None,
+            "label_format": "interval_csv",
+            "interval_count": len(records),
+            "seizure_interval_count": len(seizure_rows),
+            "eeg_onset_sec": min((record["start_sec"] for record in seizure_rows), default=None),
+            "clinical_onset_sec": min((record["start_sec"] for record in seizure_rows), default=None),
+            "seizure_end_sec": max((record["end_sec"] for record in seizure_rows), default=None),
+        }
     matches = [
         record for record in records
         if str(record.get("resolved_PatID") or "").strip().casefold() == patient_id.casefold()
@@ -202,6 +228,7 @@ def _validate_label_upload(
         "patient_id": patient_id,
         "seizure_id": seizure_id,
         "seizure_type": seizure_type,
+        "label_format": "workbook",
         "eeg_onset_sec": match.get("EEG onset seconds"),
         "clinical_onset_sec": match.get("Clinical Onset seconds"),
         "seizure_end_sec": next(
@@ -232,7 +259,11 @@ def _register_label(
             storage_backend=settings.storage_backend, storage_key=key,
             payload_state="stored", size_bytes=metadata.size_bytes,
             sha256=metadata.sha256,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            media_type=(
+                "text/csv"
+                if Path(filename).suffix.lower() == ".csv"
+                else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
             metadata_json={"uploaded_via": "web", "original_filename": filename, "label_identity": identity},
         )
     return {
