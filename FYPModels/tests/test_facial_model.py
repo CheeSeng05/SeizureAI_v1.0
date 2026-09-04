@@ -5,11 +5,20 @@ import unittest
 import torch
 
 from seizure_multimodal.facial_resnet.facial_model import (
+    ResNet50BiGRUSemiology,
     ResNet50GRUAttention,
 )
 
 
 class FacialModelTest(unittest.TestCase):
+    def test_resnet_emotion_model_is_independent_of_mhan(self) -> None:
+        model = ResNet50BiGRUSemiology(gru_hidden_size=8, pretrained=False).eval()
+        with torch.inference_mode():
+            output = model(torch.rand(1, 2, 4, 64, 64), torch.rand(1, 2, 20))
+        self.assertEqual(tuple(output["emotion_logits"].shape), (1, 7))
+        self.assertEqual(tuple(output["semiology_logits"].shape), (1, 6))
+        self.assertFalse(hasattr(model, "mhan"))
+
     def test_attention_model_returns_class_logits(self) -> None:
         model = ResNet50GRUAttention(
             num_classes=2,

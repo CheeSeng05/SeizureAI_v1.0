@@ -444,6 +444,56 @@ measurement proxies rather than emotion diagnoses. Validate them against
 independent clinician scores with `evaluation/biomarker_validation.py` before
 making clinical claims.
 
+## MHAN-BiGRU micro-expression semiology model
+
+Two independent multi-task architectures are available. The ResNet model uses
+an ImageNet-pretrained ResNet50 plus a BiGRU. The separate MHAN model uses a
+compact RGB-flow/geometry encoder, BiGRU, and multi-head attention pooling that
+exposes the frames attended by each head. Both predict visible expression,
+facial semiology, and seizure status.
+
+The existing 5 fps binary manifest cannot train this model. Re-preprocess at a
+minimum of 25 fps with short overlapping windows:
+
+```bash
+python -m seizure_multimodal.facial_resnet.prepare_dataset \
+  --dataset-root "datasets/Seizure videos of epilepsy patients" \
+  --output results/microexpression_patient_70_15_15 \
+  --split-unit patient --train-fraction 0.70 --validation-fraction 0.15 \
+  --fps 25 --window-seconds 1.0 --stride-seconds 0.25
+```
+
+Create a blinded annotation CSV from
+`configs/microexpression_annotations.example.csv`. `emotion` is one of
+`neutral`, `fear`, `anger`, `sadness`, `disgust`, `surprise`, or `happiness`.
+`semiologies` is `none` or a pipe-separated selection from `fear`, `crying`,
+`laughter`, `grimacing`, `oral_automatism`, and `motor_asymmetry`. A blank field
+means missing—not a negative label.
+
+```bash
+python -m seizure_multimodal.facial_mhan.train \
+  --manifest results/microexpression_patient_70_15_15/video_manifest.csv \
+  --annotations configs/microexpression_annotations.csv \
+  --checkpoint checkpoints/fyp/facial/mhan_bigru_best.pth \
+  --epochs 40 --patience 8
+```
+
+Training selects the lowest validation-loss checkpoint, writes a recoverable
+`mhan_bigru_best_latest.pth` every epoch, and stops early after the configured
+patience. The labels must be clinician-annotated; the seizure folder name is
+not treated as an emotion or semiology label.
+
+Resume an interrupted run with `--resume checkpoints/fyp/facial/mhan_bigru_best_latest.pth`.
+
+Train the independent ResNet50-BiGRU model with the same annotations:
+
+```bash
+python -m seizure_multimodal.facial_resnet.train_emotions \
+  --manifest results/microexpression_patient_70_15_15/video_manifest.csv \
+  --annotations configs/microexpression_annotations.csv \
+  --checkpoint checkpoints/fyp/facial/resnet_emotions_best.pth
+```
+
 ## Installation and verification
 
 ```powershell

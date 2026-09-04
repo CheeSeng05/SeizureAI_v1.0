@@ -6,13 +6,13 @@ from torchvision.models import ResNet50_Weights, resnet50
 
 
 EMOTIONS = (
-    "angry",
-    "disgust",
-    "fear",
-    "happy",
     "neutral",
-    "sad",
+    "fear",
+    "anger",
+    "sadness",
+    "disgust",
     "surprise",
+    "happiness",
 )
 
 
@@ -191,7 +191,50 @@ class ResNet50GRUAttention(nn.Module):
         return torch.softmax(self(video), dim=1)
 
 
+class ResNet50BiGRUSemiology(nn.Module):
+    """Independent ResNet50-BiGRU model for expression and facial semiology."""
+
+    def __init__(self, gru_hidden_size: int = 128, pretrained: bool = True) -> None:
+        super().__init__()
+        self.emotion_classes = EMOTIONS
+        self.semiology_classes = (
+            "fear", "crying", "laughter", "grimacing", "oral_automatism", "motor_asymmetry"
+        )
+        base = ResNet50GRUAttention(
+            num_classes=2, gru_hidden_size=gru_hidden_size,
+            attention_heads=8, pretrained=pretrained,
+        )
+        self.backbone = base.backbone
+        self.rgb_mean, self.rgb_std = base.rgb_mean, base.rgb_std
+        self.geometry = nn.Sequential(nn.LayerNorm(20), nn.Linear(20, 128), nn.GELU())
+        self.bigru = nn.GRU(
+            base.feature_dim + 128, gru_hidden_size, batch_first=True, bidirectional=True
+        )
+        output_dim = gru_hidden_size * 2
+        self.emotion_head = nn.Linear(output_dim, len(self.emotion_classes))
+        self.semiology_head = nn.Linear(output_dim, len(self.semiology_classes))
+        self.seizure_head = nn.Linear(output_dim, 2)
+
+    def forward(self, video: torch.Tensor, geometry: torch.Tensor) -> dict[str, torch.Tensor]:
+        if video.ndim != 5 or video.shape[2] != 4:
+            raise ValueError("video must have shape [B,T,4,H,W]")
+        if geometry.shape != (video.shape[0], video.shape[1], 20):
+            raise ValueError("geometry must have shape [B,T,20]")
+        batch, time = video.shape[:2]
+        frames = video.flatten(0, 1)
+        frames = torch.cat(((frames[:, :3] - self.rgb_mean) / self.rgb_std, frames[:, 3:4]), 1)
+        visual = self.backbone(frames).reshape(batch, time, -1)
+        temporal, _ = self.bigru(torch.cat((visual, self.geometry(geometry)), -1))
+        embedding = temporal.mean(1)
+        return {
+            "emotion_logits": self.emotion_head(embedding),
+            "semiology_logits": self.semiology_head(embedding),
+            "seizure_logits": self.seizure_head(embedding),
+            "embedding": embedding,
+        }
+
+
 # Keep the old import name as an alias while making its architecture explicit.
 ResNet50GRU = ResNet50GRUAttention
 
-__all__ = ["EMOTIONS", "ResNet50GRU", "ResNet50GRUAttention"]
+__all__ = ["EMOTIONS", "ResNet50BiGRUSemiology", "ResNet50GRU", "ResNet50GRUAttention"]

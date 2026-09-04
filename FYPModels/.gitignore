@@ -11,7 +11,6 @@ __pycache__/
 test_video/
 datasets/
 results/
-facial_mhan/
 *.mp4
 *.mov
 *.avi
