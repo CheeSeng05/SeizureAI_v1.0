@@ -1,4 +1,4 @@
-"""Train the independent ResNet50-BiGRU expression/semiology model."""
+"""Train the independent InceptionResnetV1-BiGRU expression/semiology model."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from .facial_model import ResNet50BiGRUSemiology
+from .facial_model import InceptionResnetV1BiGRUSemiology
 from .train import resolve_device
 from ..facial_mhan.train import MicroExpressionDataset, run_epoch
 
@@ -17,14 +17,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--annotations", required=True)
-    parser.add_argument("--checkpoint", default="checkpoints/fyp/facial/resnet_emotions_best.pth")
+    parser.add_argument("--checkpoint", default="checkpoints/fyp/facial/inception_resnet_v1_emotions_best.pth")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--patience", type=int, default=6)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
     args = parser.parse_args()
     device = resolve_device(args.device)
-    model = ResNet50BiGRUSemiology(pretrained=True).to(device)
+    model = InceptionResnetV1BiGRUSemiology(pretrained=True).to(device)
     datasets = {
         split: MicroExpressionDataset(
             args.manifest, args.annotations, split,
@@ -48,7 +48,7 @@ def main() -> None:
         if validation["total_loss"] < best:
             best, stale = validation["total_loss"], 0
             torch.save({
-                "model_name": "ResNet50BiGRUSemiology",
+                "model_name": "InceptionResnetV1BiGRUSemiology",
                 "model_state_dict": model.state_dict(), "epoch": epoch,
                 "emotion_classes": model.emotion_classes,
                 "semiology_classes": model.semiology_classes,

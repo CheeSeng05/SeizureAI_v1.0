@@ -209,7 +209,7 @@ Those metrics are stored with `validity=simulated` and
 
 
 
-### Facial ResNet50–BiGRU–multi-head-attention model
+### Facial InceptionResnetV1–BiGRU–multi-head-attention model
 
 The experimental facial classifier is informed by the computer-vision framing
 in [Deep facial analysis: A new phase I epilepsy evaluation using computer
@@ -223,8 +223,9 @@ The implemented forward path is:
 
 ```text
 [B,T,4,224,224] RGB + optical-flow magnitude
-→ ImageNet-pretrained ResNet50 applied to every frame
-→ [B,T,2048] frame features
+→ resize to 160×160 and standardize RGB as (255*x - 127.5)/128
+→ VGGFace2-pretrained InceptionResnetV1 applied to every frame
+→ [B,T,512] frame features
 → bidirectional GRU (256 units per direction)
 → [B,T,512] temporal features
 → 8-head temporal self-attention + residual connection + LayerNorm
@@ -232,9 +233,9 @@ The implemented forward path is:
 → LayerNorm + dropout + binary linear classifier
 ```
 
-The ResNet50 RGB filters retain their ImageNet initialization. Its fourth input
+The InceptionResnetV1 RGB filters retain their VGGFace2 initialization. Its fourth input
 channel is initialized from the mean pretrained RGB filter. During the current
-training policy, the ResNet50 backbone is frozen except for this adapted input
+training policy, the InceptionResnetV1 backbone is frozen except for this adapted input
 layer; the BiGRU, multi-head attention, and classifier are trainable.
 
 Train it on a patient-disjoint preprocessed manifest with:
@@ -242,7 +243,7 @@ Train it on a patient-disjoint preprocessed manifest with:
 ```bash
 python -m seizure_multimodal.facial_resnet.train \
   --manifest results/facial_patient_70_30/video_manifest.csv \
-  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
+  --checkpoint checkpoints/fyp/facial/inception_resnet_v1_gru_attention_final.pth \
   --epochs 20 \
   --batch-size 2 \
   --attention-heads 8 \
@@ -251,7 +252,7 @@ python -m seizure_multimodal.facial_resnet.train \
 
 The held-out test split is evaluated once after the fixed training epochs. The
 attention model requires a newly trained checkpoint: checkpoints from the old
-ResNet50–GRU model do not contain attention parameters and inference rejects
+ResNet50 model use an incompatible backbone and feature dimension and inference rejects
 them explicitly rather than silently using partially initialized weights.
 
 ### VSViG
@@ -398,7 +399,7 @@ loads `test`:
 ```bash
 python -m seizure_multimodal.facial_resnet.train \
   --manifest results/facial_patient_70_15_15/video_manifest.csv \
-  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth
+  --checkpoint checkpoints/fyp/facial/inception_resnet_v1_gru_attention_final.pth
 ```
 
 3. Copy `configs/facial_annotations.example.csv`, replace the example rows with
@@ -413,7 +414,7 @@ as invented seizure offsets.
 python -m seizure_multimodal.facial_resnet.evaluation \
   --mode clip \
   --manifest results/facial_patient_70_15_15/video_manifest.csv \
-  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
+  --checkpoint checkpoints/fyp/facial/inception_resnet_v1_gru_attention_final.pth \
   --config configs/facial_evaluation.yaml \
   --output results/facial_final_evaluation
 ```
@@ -430,7 +431,7 @@ event mode:
 python -m seizure_multimodal.facial_resnet.evaluation \
   --mode event \
   --manifest results/facial_patient_70_15_15/video_manifest.csv \
-  --checkpoint checkpoints/fyp/facial/resnet50_gru_attention_final.pth \
+  --checkpoint checkpoints/fyp/facial/inception_resnet_v1_gru_attention_final.pth \
   --annotations configs/facial_annotations.csv \
   --config configs/facial_evaluation.yaml \
   --output results/facial_final_evaluation
@@ -447,7 +448,7 @@ making clinical claims.
 ## MHAN-BiGRU micro-expression semiology model
 
 Two independent multi-task architectures are available. The ResNet model uses
-an ImageNet-pretrained ResNet50 plus a BiGRU. The separate MHAN model uses a
+an VGGFace2-pretrained InceptionResnetV1 plus a BiGRU. The separate MHAN model uses a
 compact RGB-flow/geometry encoder, BiGRU, and multi-head attention pooling that
 exposes the frames attended by each head. Both predict visible expression,
 facial semiology, and seizure status.
@@ -485,13 +486,13 @@ not treated as an emotion or semiology label.
 
 Resume an interrupted run with `--resume checkpoints/fyp/facial/mhan_bigru_best_latest.pth`.
 
-Train the independent ResNet50-BiGRU model with the same annotations:
+Train the independent InceptionResnetV1-BiGRU model with the same annotations:
 
 ```bash
 python -m seizure_multimodal.facial_resnet.train_emotions \
   --manifest results/microexpression_patient_70_15_15/video_manifest.csv \
   --annotations configs/microexpression_annotations.csv \
-  --checkpoint checkpoints/fyp/facial/resnet_emotions_best.pth
+  --checkpoint checkpoints/fyp/facial/inception_resnet_v1_emotions_best.pth
 ```
 
 ## Installation and verification
@@ -527,3 +528,5 @@ passes all 50 tests:
 - VSViG retrained/fine-tuned: **NO**.
 - EEG model retrained/fine-tuned: **NO**.
 - Real fusion model trained: **NO**.
+
+The facial backbone requires `facenet-pytorch` (included in `pip install -e ".[facial]"`). VGGFace2 weights download automatically on first training initialization. They provide face identity features; the expression and seizure heads still require task-specific training. Existing 224×224 RGB+flow windows are resized inside the model. The `facial_resnet` module path is retained.

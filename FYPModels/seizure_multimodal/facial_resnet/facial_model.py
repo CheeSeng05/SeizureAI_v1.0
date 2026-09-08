@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from torchvision.models import ResNet50_Weights, resnet50
+from facenet_pytorch import InceptionResnetV1
+from torch.nn import functional as F
 
 
 EMOTIONS = (
@@ -16,8 +17,8 @@ EMOTIONS = (
 )
 
 
-class ResNet50GRUAttention(nn.Module):
-    """ResNet50 frame encoder, BiGRU, and temporal multi-head attention.
+class InceptionResnetV1GRUAttention(nn.Module):
+    """InceptionResnetV1 frame encoder, BiGRU, and temporal multi-head attention.
 
     Input:
         [batch, time, 4, height, width]
@@ -41,12 +42,16 @@ class ResNet50GRUAttention(nn.Module):
     ) -> None:
         super().__init__()
 
-        weights = ResNet50_Weights.DEFAULT if pretrained else None
-        backbone = resnet50(weights=weights)
+        backbone = InceptionResnetV1(
+            pretrained="vggface2" if pretrained else None, classify=False
+        )
+        # Identity logits are unused; keep trained/untrained state dicts identical.
+        if hasattr(backbone, "logits"):
+            del backbone.logits
 
-        # Adapt ImageNet ResNet50 from RGB to RGB + optical flow.
-        original_conv = backbone.conv1
-        backbone.conv1 = nn.Conv2d(
+        # Adapt VGGFace2 InceptionResnetV1 from RGB to RGB + optical flow.
+        original_conv = backbone.conv2d_1a.conv
+        backbone.conv2d_1a.conv = nn.Conv2d(
             in_channels=4,
             out_channels=original_conv.out_channels,
             kernel_size=original_conv.kernel_size,
@@ -58,17 +63,16 @@ class ResNet50GRUAttention(nn.Module):
         if pretrained:
             with torch.no_grad():
                 # Preserve the original pretrained RGB filters.
-                backbone.conv1.weight[:, :3].copy_(
+                backbone.conv2d_1a.conv.weight[:, :3].copy_(
                     original_conv.weight
                 )
 
                 # Initialize the optical-flow channel from the mean RGB filter.
-                backbone.conv1.weight[:, 3:4].copy_(
+                backbone.conv2d_1a.conv.weight[:, 3:4].copy_(
                     original_conv.weight.mean(dim=1, keepdim=True)
                 )
 
-        self.feature_dim = backbone.fc.in_features  # 2048
-        backbone.fc = nn.Identity()
+        self.feature_dim = 512
         self.backbone = backbone
 
         self.gru = nn.GRU(
@@ -107,18 +111,18 @@ class ResNet50GRUAttention(nn.Module):
             nn.Linear(gru_output_size, num_classes),
         )
 
-        # ImageNet normalization values.
+        # VGGFace2 normalization values.
         self.register_buffer(
             "rgb_mean",
             torch.tensor(
-                [0.485, 0.456, 0.406],
+                [127.5 / 255.0] * 3,
                 dtype=torch.float32,
             ).view(1, 3, 1, 1),
         )
         self.register_buffer(
             "rgb_std",
             torch.tensor(
-                [0.229, 0.224, 0.225],
+                [128.0 / 255.0] * 3,
                 dtype=torch.float32,
             ).view(1, 3, 1, 1),
         )
@@ -129,6 +133,7 @@ class ResNet50GRUAttention(nn.Module):
     ) -> torch.Tensor:
         """Normalize RGB while retaining flow in approximately [0, 1]."""
 
+        frames = F.interpolate(frames, size=(160, 160), mode="bilinear", align_corners=False)
         rgb = (frames[:, :3] - self.rgb_mean) / self.rgb_std
         flow = frames[:, 3:4]
 
@@ -146,7 +151,7 @@ class ResNet50GRUAttention(nn.Module):
 
         batch, time, channels, height, width = video.shape
 
-        # Process all frames with ResNet50 as one large frame batch.
+        # Process all frames with InceptionResnetV1 as one large frame batch.
         frames = video.reshape(
             batch * time,
             channels,
@@ -191,8 +196,8 @@ class ResNet50GRUAttention(nn.Module):
         return torch.softmax(self(video), dim=1)
 
 
-class ResNet50BiGRUSemiology(nn.Module):
-    """Independent ResNet50-BiGRU model for expression and facial semiology."""
+class InceptionResnetV1BiGRUSemiology(nn.Module):
+    """Independent InceptionResnetV1-BiGRU model for expression and facial semiology."""
 
     def __init__(self, gru_hidden_size: int = 128, pretrained: bool = True) -> None:
         super().__init__()
@@ -200,12 +205,13 @@ class ResNet50BiGRUSemiology(nn.Module):
         self.semiology_classes = (
             "fear", "crying", "laughter", "grimacing", "oral_automatism", "motor_asymmetry"
         )
-        base = ResNet50GRUAttention(
+        base = InceptionResnetV1GRUAttention(
             num_classes=2, gru_hidden_size=gru_hidden_size,
             attention_heads=8, pretrained=pretrained,
         )
         self.backbone = base.backbone
-        self.rgb_mean, self.rgb_std = base.rgb_mean, base.rgb_std
+        self.register_buffer("rgb_mean", base.rgb_mean.clone())
+        self.register_buffer("rgb_std", base.rgb_std.clone())
         self.geometry = nn.Sequential(nn.LayerNorm(20), nn.Linear(20, 128), nn.GELU())
         self.bigru = nn.GRU(
             base.feature_dim + 128, gru_hidden_size, batch_first=True, bidirectional=True
@@ -222,7 +228,7 @@ class ResNet50BiGRUSemiology(nn.Module):
             raise ValueError("geometry must have shape [B,T,20]")
         batch, time = video.shape[:2]
         frames = video.flatten(0, 1)
-        frames = torch.cat(((frames[:, :3] - self.rgb_mean) / self.rgb_std, frames[:, 3:4]), 1)
+        frames = InceptionResnetV1GRUAttention.normalize_frames(self, frames)
         visual = self.backbone(frames).reshape(batch, time, -1)
         temporal, _ = self.bigru(torch.cat((visual, self.geometry(geometry)), -1))
         embedding = temporal.mean(1)
@@ -235,6 +241,6 @@ class ResNet50BiGRUSemiology(nn.Module):
 
 
 # Keep the old import name as an alias while making its architecture explicit.
-ResNet50GRU = ResNet50GRUAttention
+InceptionResnetV1GRU = InceptionResnetV1GRUAttention
 
-__all__ = ["EMOTIONS", "ResNet50BiGRUSemiology", "ResNet50GRU", "ResNet50GRUAttention"]
+__all__ = ["EMOTIONS", "InceptionResnetV1BiGRUSemiology", "InceptionResnetV1GRU", "InceptionResnetV1GRUAttention"]

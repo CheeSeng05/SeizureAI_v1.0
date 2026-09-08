@@ -25,6 +25,7 @@ video = [
   "opencv-python-headless>=4.8",
 ]
 facial = [
+  "facenet-pytorch>=2.6,<3",
   "torch>=2.1",
   "torchvision>=0.16",
   "opencv-python-headless>=4.8",
@@ -32,6 +33,7 @@ facial = [
 ]
 eeg = ["tensorflow>=2.15"]
 all = [
+  "facenet-pytorch>=2.6,<3",
   "torch>=2.1",
   "torchvision>=0.16",
   "timm>=0.9",

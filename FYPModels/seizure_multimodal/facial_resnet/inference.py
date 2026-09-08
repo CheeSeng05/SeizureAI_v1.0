@@ -6,13 +6,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .facial_model import ResNet50GRUAttention
+from .facial_model import InceptionResnetV1GRUAttention
 
 
 def load_model(
     checkpoint_path: str | Path,
     device: torch.device,
-) -> tuple[ResNet50GRUAttention, tuple[str, ...]]:
+) -> tuple[InceptionResnetV1GRUAttention, tuple[str, ...]]:
     checkpoint_path = Path(checkpoint_path)
 
     if not checkpoint_path.is_file():
@@ -39,13 +39,13 @@ def load_model(
     classes = tuple(checkpoint["classes"])
 
     model_name = checkpoint.get("model_name")
-    if model_name != "ResNet50GRUAttention":
+    if model_name != "InceptionResnetV1GRUAttention":
         raise ValueError(
-            "This inference path requires a ResNet50GRUAttention checkpoint; "
-            f"found {model_name!r}. Retrain after adding attention."
+            "This inference path requires a InceptionResnetV1GRUAttention checkpoint; "
+            f"found {model_name!r}. Retrain with the VGGFace2 backbone."
         )
 
-    model = ResNet50GRUAttention(
+    model = InceptionResnetV1GRUAttention(
         num_classes=len(classes),
         gru_hidden_size=checkpoint.get(
             "gru_hidden_size",
@@ -110,7 +110,7 @@ def load_face_window(
 
 
 def predict_window(
-    model: ResNet50GRUAttention,
+    model: InceptionResnetV1GRUAttention,
     video: torch.Tensor,
     classes: tuple[str, ...],
     device: torch.device,
@@ -141,7 +141,7 @@ def predict_window(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run ResNet50-BiGRU-attention inference on one face window"
+        description="Run InceptionResnetV1-BiGRU-attention inference on one face window"
     )
     parser.add_argument(
         "--input",

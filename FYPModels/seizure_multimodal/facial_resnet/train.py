@@ -11,7 +11,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from .facial_model import ResNet50GRUAttention
+from .facial_model import InceptionResnetV1GRUAttention
 from ..evaluation.classification import binary_classification_metrics
 from ..evaluation.thresholds import select_threshold
 
@@ -91,14 +91,14 @@ class FaceWindowDataset(Dataset):
 
 
 def configure_trainable_layers(
-    model: ResNet50GRUAttention,
+    model: InceptionResnetV1GRUAttention,
 ) -> None:
-    # Freeze pretrained ResNet50.
+    # Freeze pretrained InceptionResnetV1.
     for parameter in model.backbone.parameters():
         parameter.requires_grad = False
 
     # Train the adapted four-channel input layer.
-    for parameter in model.backbone.conv1.parameters():
+    for parameter in model.backbone.conv2d_1a.conv.parameters():
         parameter.requires_grad = True
 
     # GRU, attention, and classifier are trained on the facial dataset.
@@ -116,7 +116,7 @@ def configure_trainable_layers(
 
 
 def run_training_epoch(
-    model: ResNet50GRUAttention,
+    model: InceptionResnetV1GRUAttention,
     loader: DataLoader,
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -124,9 +124,9 @@ def run_training_epoch(
 ) -> float:
     model.train()
 
-    # Keep frozen ResNet BatchNorm statistics fixed.
+    # Keep frozen InceptionResnetV1 BatchNorm statistics fixed.
     model.backbone.eval()
-    model.backbone.conv1.train()
+    model.backbone.conv2d_1a.conv.train()
 
     total_loss = 0.0
     total_samples = 0
@@ -151,7 +151,7 @@ def run_training_epoch(
 
 
 def run_evaluation(
-    model: ResNet50GRUAttention,
+    model: InceptionResnetV1GRUAttention,
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -187,7 +187,7 @@ def run_evaluation(
 
 def save_checkpoint(
     path: Path,
-    model: ResNet50GRUAttention,
+    model: InceptionResnetV1GRUAttention,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: dict[str, float | int | None | str],
@@ -197,7 +197,7 @@ def save_checkpoint(
 
     torch.save(
         {
-            "model_name": "ResNet50GRUAttention",
+            "model_name": "InceptionResnetV1GRUAttention",
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch,
@@ -218,7 +218,7 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/fyp/facial/resnet50_gru_attention_final.pth",
+        default="checkpoints/fyp/facial/inception_resnet_v1_gru_attention_final.pth",
     )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -263,7 +263,7 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
 
-    model = ResNet50GRUAttention(
+    model = InceptionResnetV1GRUAttention(
         num_classes=len(CLASSES),
         attention_heads=args.attention_heads,
         pretrained=True,
@@ -274,7 +274,7 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         [
             {
-                "params": model.backbone.conv1.parameters(),
+                "params": model.backbone.conv2d_1a.conv.parameters(),
                 "lr": 1e-5,
             },
             {
