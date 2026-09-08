@@ -197,7 +197,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--pose-model",
-        default="checkpoints/pretrained/mediapipe/pose_landmarker_lite.task",
+        default="checkpoints/pretrained/mediapipe/pose_landmarker_full.task",
     )
     parser.add_argument(
         "--face-model",

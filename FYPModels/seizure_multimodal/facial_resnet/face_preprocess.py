@@ -789,7 +789,7 @@ def main() -> None:
         "--pose-model",
         default=(
             "checkpoints/pretrained/mediapipe/"
-            "pose_landmarker_lite.task"
+            "pose_landmarker_full.task"
         ),
     )
 
