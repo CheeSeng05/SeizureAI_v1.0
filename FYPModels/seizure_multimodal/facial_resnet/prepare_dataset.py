@@ -8,6 +8,7 @@ import random
 from pathlib import Path
 
 from .face_preprocess import extract_video
+from .preprocess_options import add_tuning_arguments, tuning_kwargs, validate_tuning
 
 
 PLAN_FIELDS = (
@@ -190,7 +191,7 @@ def main() -> None:
     parser.add_argument("--max-poses", type=int, default=4)
     parser.add_argument("--head-margin", type=float, default=0.75)
     parser.add_argument("--max-head-jump", type=float, default=0.18)
-    parser.add_argument("--max-box-reuse-frames", type=int, default=15)
+    add_tuning_arguments(parser)
     parser.add_argument(
         "--roi-config",
         help="Optional JSON mapping patient IDs to normalized [x1,y1,x2,y2] regions.",
@@ -214,6 +215,7 @@ def main() -> None:
         help="Process only the first N planned videos for an integration smoke test.",
     )
     args = parser.parse_args()
+    validate_tuning(tuning_kwargs(args))
 
     output = Path(args.output).resolve()
     rows = stratified_video_plan(
@@ -298,7 +300,7 @@ def main() -> None:
             max_poses=args.max_poses,
             head_margin=args.head_margin,
             max_head_jump=args.max_head_jump,
-            max_box_reuse_frames=args.max_box_reuse_frames,
+            **tuning_kwargs(args),
         )
         if result.windows_written == 0:
             print(f"WARNING: no complete windows written for {row['source_video']}")

@@ -9,11 +9,25 @@ import argparse
 import csv
 import hashlib
 import json
+import math
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+
+if __package__:
+    from .preprocess_diagnostics import frame_diagnostics, write_diagnostics
+    from .preprocess_options import (
+        add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
+    )
+else:
+    # Preserve the original standalone `python face_preprocess.py` entry point.
+    from preprocess_diagnostics import frame_diagnostics, write_diagnostics
+    from preprocess_options import (
+        add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
+    )
 
 
 FACE_LANDMARK_PAIRS = (
@@ -60,7 +74,8 @@ class PreprocessSummary:
     sampled_fps: float
     sampled_frames: int
     windows_written: int
-    manifest_path: str
+    manifest_path: str | None
+    diagnostics_path: str | None = None
 
 
 def _patient_split(patient_id: str, seed: int = 42) -> str:
@@ -480,12 +495,21 @@ def extract_video(
     face_margin: float = 0.25,
     box_smoothing: float = 0.7,
     max_box_reuse_frames: int = 15,
+    max_box_reuse_seconds: float | None = None,
+    min_pose_detection_confidence: float = 0.5,
+    min_pose_presence_confidence: float = 0.5,
+    min_pose_tracking_confidence: float = 0.5,
+    min_face_detection_confidence: float = 0.5,
+    min_face_presence_confidence: float = 0.5,
+    min_face_tracking_confidence: float = 0.5,
     patient_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0),
     max_poses: int = 4,
     head_margin: float = 0.75,
     max_head_jump: float = 0.18,
     preview: bool = False,
     preview_delay_ms: int = 1,
+    diagnostics_only: bool = False,
+    max_duration_seconds: float | None = None,
 ) -> PreprocessSummary:
     """Extract model-ready face crops and landmarks; discard partial windows."""
     pose_model_path = Path(pose_model_path).resolve()
@@ -501,17 +525,33 @@ def extract_video(
             f"Face task model not found: {face_model_path}"
         )
     
-    if fps <= 0 or window_seconds <= 0:
+    if not math.isfinite(fps) or not math.isfinite(window_seconds) or fps <= 0 or window_seconds <= 0:
         raise ValueError("fps and window_seconds must be positive")
     
     stride_seconds = window_seconds / 2 if stride_seconds is None else stride_seconds
-    if stride_seconds <= 0:
+    if not math.isfinite(stride_seconds) or stride_seconds <= 0:
         raise ValueError("stride_seconds must be positive")
     
     if face_size <= 0:
         raise ValueError("face_size must be positive")
-    if face_margin < 0 or head_margin < 0 or not 0 <= box_smoothing < 1 or max_box_reuse_frames < 0:
-        raise ValueError("Invalid face margin, box smoothing, or box reuse setting")
+    if not math.isfinite(face_margin) or not math.isfinite(head_margin) or face_margin < 0 or head_margin < 0:
+        raise ValueError("Invalid face or head margin")
+    tuning = dict(
+        min_pose_detection_confidence=min_pose_detection_confidence,
+        min_pose_presence_confidence=min_pose_presence_confidence,
+        min_pose_tracking_confidence=min_pose_tracking_confidence,
+        min_face_detection_confidence=min_face_detection_confidence,
+        min_face_presence_confidence=min_face_presence_confidence,
+        min_face_tracking_confidence=min_face_tracking_confidence,
+        box_smoothing=box_smoothing,
+        max_box_reuse_frames=max_box_reuse_frames,
+        max_box_reuse_seconds=max_box_reuse_seconds,
+    )
+    validate_tuning(tuning)
+    if max_duration_seconds is not None and (
+        not math.isfinite(max_duration_seconds) or max_duration_seconds <= 0
+    ):
+        raise ValueError("max_duration_seconds must be finite and positive")
     if max_poses <= 0:
         raise ValueError("max_poses must be positive")
     if not 0 < max_head_jump <= 1:
@@ -523,8 +563,8 @@ def extract_video(
     ):
         raise ValueError("patient_roi must be normalized x1,y1,x2,y2 coordinates")
     
-    if not sample_id or "__" in sample_id:
-        raise ValueError("sample_id must be non-empty and cannot contain '__'")
+    if not sample_id or "__" in sample_id or Path(sample_id).name != sample_id or sample_id in {".", ".."}:
+        raise ValueError("sample_id must be a non-empty filename without '__' or directory components")
     
     try:
         import cv2
@@ -539,9 +579,10 @@ def extract_video(
     destination = Path(output).resolve()
     pose_dir, face_dir = destination / "pose", destination / "face"
     geometry_dir = destination / "face_geometry"
-    pose_dir.mkdir(parents=True, exist_ok=True)
-    face_dir.mkdir(parents=True, exist_ok=True)
-    geometry_dir.mkdir(parents=True, exist_ok=True)
+    if not diagnostics_only:
+        pose_dir.mkdir(parents=True, exist_ok=True)
+        face_dir.mkdir(parents=True, exist_ok=True)
+        geometry_dir.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(source))
 
     if not capture.isOpened():
@@ -563,6 +604,7 @@ def extract_video(
 
     face_box_reused: list[bool] = []
     times: list[float] = []
+    diagnostic_rows: list[dict[str, Any]] = []
 
     next_sample, frame_index = 0.0, 0
     vision = mp.tasks.vision
@@ -574,9 +616,9 @@ def extract_video(
         ),
         running_mode=vision.RunningMode.VIDEO,
         num_poses=max_poses,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_pose_detection_confidence=min_pose_detection_confidence,
+        min_pose_presence_confidence=min_pose_presence_confidence,
+        min_tracking_confidence=min_pose_tracking_confidence,
     )
 
     face_options = vision.FaceLandmarkerOptions(
@@ -585,9 +627,9 @@ def extract_video(
         ),
         running_mode=vision.RunningMode.VIDEO,
         num_faces=1,
-        min_face_detection_confidence=0.5,
-        min_face_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_face_detection_confidence=min_face_detection_confidence,
+        min_face_presence_confidence=min_face_presence_confidence,
+        min_tracking_confidence=min_face_tracking_confidence,
         output_face_blendshapes=False,
         output_facial_transformation_matrixes=False,
     )
@@ -604,6 +646,8 @@ def extract_video(
     missed_face_frames = 0
     preview_active = preview
     tracked_head_center: tuple[float, float] | None = None
+    last_detected_box_sec: float | None = None
+    processing_start = time.perf_counter()
 
     try:
         while True:
@@ -612,6 +656,8 @@ def extract_video(
                 break
             time_sec = frame_index / source_fps
             frame_index += 1
+            if max_duration_seconds is not None and time_sec >= max_duration_seconds:
+                break
             if time_sec + 1e-9 < next_sample:
                 continue
 
@@ -677,12 +723,19 @@ def extract_video(
             used_pose_fallback = detected_box is not None and not has_face
 
             reused = False
+            previous_box = smoothed_box
             if detected_box is not None:
                 smoothed_box = _smooth_box(smoothed_box, detected_box, box_smoothing)
                 missed_face_frames = 0
+                last_detected_box_sec = time_sec
             else:
                 missed_face_frames += 1
-                reused = smoothed_box is not None and missed_face_frames <= max_box_reuse_frames
+                reused = smoothed_box is not None and last_detected_box_sec is not None and can_reuse_box(
+                    missed_frames=missed_face_frames,
+                    elapsed_seconds=time_sec - last_detected_box_sec,
+                    max_frames=max_box_reuse_frames,
+                    max_seconds=max_box_reuse_seconds,
+                )
                 if not reused:
                     smoothed_box = None
             face_input, current_gray = _crop_face_input(
@@ -701,7 +754,13 @@ def extract_video(
                     cv2=cv2,
                 )
             previous_face_gray = current_gray
-            poses.append(pose); faces.append(face_input); face_geometries.append(geometry)
+            diagnostic_rows.append(frame_diagnostics(
+                time_sec=time_sec, raw_box=detected_box, crop_box=smoothed_box,
+                previous_box=previous_box, frame_shape=bgr.shape,
+                flags=(has_pose, has_face, smoothed_box is not None, used_pose_fallback, reused),
+            ))
+            if not diagnostics_only:
+                poses.append(pose); faces.append(face_input); face_geometries.append(geometry)
             pose_hits.append(has_pose); face_hits.append(has_face)
             face_region_hits.append(smoothed_box is not None)
             pose_head_fallbacks.append(used_pose_fallback)
@@ -711,6 +770,24 @@ def extract_video(
         capture.release(); pose_api.close(); face_api.close()
         if preview:
             cv2.destroyAllWindows()
+
+    processing_seconds = time.perf_counter() - processing_start
+    diagnostics_path = write_diagnostics(
+        destination / "diagnostics", sample_id, diagnostic_rows,
+        settings={
+            **tuning, "source_video": str(source), "pose_model_path": str(pose_model_path),
+            "face_model_path": str(face_model_path), "fps": fps, "source_fps": source_fps,
+            "window_seconds": window_seconds, "stride_seconds": stride_seconds,
+            "face_size": face_size, "face_margin": face_margin, "patient_roi": patient_roi,
+            "max_poses": max_poses, "head_margin": head_margin, "max_head_jump": max_head_jump,
+            "running_mode": "VIDEO", "diagnostics_only": diagnostics_only,
+            "max_duration_seconds": max_duration_seconds,
+        }, processing_seconds=processing_seconds,
+    )
+    if diagnostics_only:
+        summary = PreprocessSummary(str(source), source_fps, fps, len(times), 0, None, str(diagnostics_path))
+        print(json.dumps(asdict(summary), indent=2))
+        return summary
 
     length = max(1, round(fps * window_seconds))
     stride = max(1, round(fps * stride_seconds))
@@ -751,7 +828,7 @@ def extract_video(
         })
     manifest = destination / "video_manifest.csv"
     _write_rows(manifest, rows, append=append_manifest)
-    summary = PreprocessSummary(str(source), source_fps, fps, len(poses), len(rows), str(manifest))
+    summary = PreprocessSummary(str(source), source_fps, fps, len(poses), len(rows), str(manifest), str(diagnostics_path))
     print(json.dumps(asdict(summary), indent=2))
     return summary
 
@@ -769,8 +846,11 @@ def main() -> None:
     parser.add_argument("--face-size", type=int, default=224)
     parser.add_argument("--face-margin", type=float, default=.25)
 
-    parser.add_argument("--box-smoothing", type=float, default=.7)
-    parser.add_argument("--max-box-reuse-frames", type=int, default=15)
+    add_tuning_arguments(parser)
+    parser.add_argument("--diagnostics-only", action="store_true",
+                        help="Save frame diagnostics and metrics without training window arrays.")
+    parser.add_argument("--max-duration-seconds", type=float,
+                        help="Process only this many seconds from the start of the video.")
     parser.add_argument("--max-poses", type=int, default=4)
     parser.add_argument("--head-margin", type=float, default=.75)
     parser.add_argument(
@@ -830,14 +910,15 @@ def main() -> None:
             patient_id=args.patient_id, label=args.label, dataset=args.dataset, split=args.split,
             append_manifest=args.append_manifest,
             face_size=args.face_size, face_margin=args.face_margin,
-            box_smoothing=args.box_smoothing,
-            max_box_reuse_frames=args.max_box_reuse_frames,
+            **tuning_kwargs(args),
             patient_roi=patient_roi,
             max_poses=args.max_poses,
             head_margin=args.head_margin,
             max_head_jump=args.max_head_jump,
             preview=args.preview,
-            preview_delay_ms=args.preview_delay_ms)
+            preview_delay_ms=args.preview_delay_ms,
+            diagnostics_only=args.diagnostics_only,
+            max_duration_seconds=args.max_duration_seconds)
     
 
 

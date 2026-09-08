@@ -79,6 +79,100 @@ sampled frames during short detection failures. Use a new output directory, or
 remove the previous smoke-test output, before repeating the same sample because
 manifest rows are not intended to be duplicated.
 
+### Comparing MediaPipe preprocessing settings
+
+Both `face_preprocess` and `prepare_dataset` accept independent pose and face
+thresholds:
+
+```text
+--min-pose-detection-confidence 0.5
+--min-pose-presence-confidence 0.5
+--min-pose-tracking-confidence 0.5
+--min-face-detection-confidence 0.5
+--min-face-presence-confidence 0.5
+--min-face-tracking-confidence 0.5
+--box-smoothing 0.7
+```
+
+The baseline still reuses crop coordinates for up to 15 sampled frames. Use
+`--max-box-reuse-seconds 0.6` to expire reuse based on elapsed video timestamps
+since the last detected face **or pose-derived head box**. Choose either the
+seconds flag or `--max-box-reuse-frames`, not both. In the Python API, a supplied
+`max_box_reuse_seconds` overrides the frame limit. This controls reuse of an old
+box; pose-head fallback remains available while pose detection succeeds.
+
+Run the comparison from `FYPModels` with the facial environment active:
+
+```bash
+python -m seizure_multimodal.facial_resnet.compare_preprocessing \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  "datasets/Seizure videos of epilepsy patients/Normal/S1_5_259.mp4" \
+  --patient-roi "0.28,0.05,0.70,0.90" \
+  --output results/preprocessing_comparison_new
+```
+
+Use a new output directory for each comparison. The default 18 configurations
+are the baseline, each of the six confidence settings individually changed to
+0.6 and 0.7, smoothing individually changed to 0.3 and 0.5, and reuse individually
+changed to 0.4, 0.6, and 1.0 seconds. All other settings stay at baseline for each
+experiment. Pose Full and `VIDEO` mode are used throughout. This is an initial
+screening experiment; combinations of chosen settings need a subsequent check.
+
+Use `--thresholds`, `--smoothing-values`, and `--reuse-seconds` to customize the
+candidate lists; an empty list disables that group. Put positional video paths
+before these list options. `--plan-only` writes the experiment plan without
+inference. `--max-duration-seconds 30` limits each run to its first 30 seconds;
+use clips containing the movement/occlusion events you want to compare. The
+common `--patient-roi` applies to every input; use separate comparisons when
+recordings require different patient regions.
+
+The output contains:
+
+- `plan.json`: input videos, fixed settings, model paths/checksums, and experiments.
+- `comparison.csv`: one row per configuration/video, with deltas from that video's
+  baseline. Fractions are measured on distinct sampled frames, so overlapping
+  training windows do not duplicate observations.
+- `<experiment>/diagnostics/video_001.json`: exact settings and summary measurements.
+- `<experiment>/diagnostics/video_001.frames.csv`: timestamps, detection/fallback
+  flags, raw boxes, smoothed crop boxes, and crop-motion measurements.
+
+`face_landmark_fraction` measures actual landmark availability;
+`face_region_fraction` also counts pose-head fallbacks and reused coordinates.
+High region coverage alone does not demonstrate successful face detection or
+correct patient identity. The comparison saves diagnostics without generating
+large training arrays; decoding, landmark inference, cropping and optical flow
+still run. `processing_fps` excludes model initialization and output serialization
+and is only a rough timing measurement from one pass.
+
+`mean_box_center_step_fraction` measures movement of consecutive available crop
+centers, divided by the frame diagonal. `mean_box_center_offset_fraction` measures
+the distance between a smoothed crop center and its current raw face/head box
+center, also divided by the diagonal. Missing measurements are blank, not zero.
+These are motion and smoothing-offset proxies, not annotated jitter/accuracy
+scores: excessive smoothing can produce a low step value while the crop lags.
+Smoothing is applied after landmark extraction, so changing it need not alter
+landmark availability. Reuse is also applied after detection.
+
+Inspect the source video against the frame boxes and review candidate crops:
+
+```bash
+python -m seizure_multimodal.facial_resnet.face_preprocess \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  --output results/preprocessing_candidate_preview \
+  --patient-roi "0.28,0.05,0.70,0.90" \
+  --min-face-detection-confidence 0.6 \
+  --box-smoothing 0.5 \
+  --max-box-reuse-seconds 0.6 \
+  --diagnostics-only --preview
+```
+
+This last command is an illustrative combination, not an automatically selected
+winner. Once settings are chosen on validation patients, pass the same flags to
+`prepare_dataset` and regenerate inputs consistently for downstream evaluation.
+Use annotated patient identities/face boxes and visible landmark locations to
+measure wrong-person selection and geometric accuracy; keep test patients out
+of parameter selection. No preset is promoted automatically from coverage alone.
+
 ### EEG CSV
 
 `Epileptic Seizure Recognition.csv` has 11,500 rows and 180 columns:
