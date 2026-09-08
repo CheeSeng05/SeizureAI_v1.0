@@ -24,6 +24,7 @@ dev = [
 ]
 ui = [
   "Flask>=3.0,<4",
+  "gunicorn>=22,<24",
 ]
 
 [tool.setuptools.packages.find]

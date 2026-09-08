@@ -19,10 +19,5 @@ model:
   python: null
   work_root: ../work
 
-body_pose:
-  project_path: ../../BodyPose/body_pose_fyp  # Legacy annotation adapter only.
-  python: null
-  work_root: ../work
-
 logging:
   level: INFO

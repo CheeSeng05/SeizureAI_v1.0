@@ -221,6 +221,9 @@ __marimo__/
 # Project local files
 .DS_Store
 .Rhistory
+/.pnpm-store/
+/fyp_data_platform/.test-temp*/
+/fyp_data_platform/.codex-test-deps/
 
 # FYP local data, generated output, and environments
 /FYPModels/test_video/
@@ -238,3 +241,4 @@ __marimo__/
 # Raw dataset archives are kept outside Git.
 /beed_+bangalore+eeg+epilepsy+dataset.zip
 /eeg+eye+state.zip
+/Seizure videos of epilepsy patients

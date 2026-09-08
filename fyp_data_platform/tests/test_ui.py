@@ -91,6 +91,39 @@ def test_upload_registers_exactly_matched_video_labels(settings, migrated_db, mo
     assert recording["label"]["identity"]["seizure_id"] == "Sz2"
 
 
+def test_upload_registers_interval_csv_video_labels(settings, migrated_db, monkeypatch) -> None:
+    engine, factory = migrated_db
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: LocalStorage(settings.local_storage_root))
+    labels = (
+        "recording_id,patient_id,start_sec,end_sec,label,label_name\n"
+        "stitched-test-001,Pat01,0.0,5.1,N,non_seizure\n"
+        "stitched-test-001,Pat01,5.1,10.2,S,seizure\n"
+    ).encode()
+
+    client = ui.create_app().test_client()
+    response = client.post(
+        "/api/uploads",
+        data={
+            "videos": (BytesIO(b"video"), "stitched.mp4"),
+            "labels": (BytesIO(labels), "stitched_labels.csv"),
+            "dataset_id": "ui-videos", "dataset_name": "UI videos",
+            "patient_id": "Pat01", "recording_id": "stitched-test-001",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201, response.get_json()
+    identity = response.get_json()["labels"][0]["identity"]
+    assert identity["label_format"] == "interval_csv"
+    assert identity["recording_id"] == "stitched-test-001"
+    assert identity["interval_count"] == 2
+    assert identity["clinical_onset_sec"] == pytest.approx(5.1)
+    recording = client.get("/api/catalog").get_json()["recordings"][0]
+    assert recording["label"]["filename"] == "stitched_labels.csv"
+
+
 def _eeg_csv(*, include_y: bool = True) -> bytes:
     columns = ["Unnamed", *[f"X{index}" for index in range(1, 179)]]
     values = ["sample-1", *[str(index / 10) for index in range(1, 179)]]

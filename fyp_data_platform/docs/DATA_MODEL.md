@@ -7,7 +7,7 @@
 | `recordings` | Session/task/modality recording unit | `(dataset_id, source_recording_id)`; video fields nullable |
 | `files` | Object/reference catalog for raw and derived artifacts | `(dataset_id, source_relative_path)` and `(storage_backend, storage_key)`; SHA-256 |
 | `annotations` | Canonical timestamp intervals | Stable SHA-256 `annotation_key`; explicit source event/provenance |
-| `temporal_windows` | Shared multimodal/fusion intervals | Exact deterministic external `window_id` from BodyPose |
+| `temporal_windows` | Shared multimodal/fusion intervals | Exact deterministic external `window_id` from the active model pipeline |
 | `model_runs` | Reproducible `seizure_multimodal` execution metadata | Status, config, metrics, command, timestamps, artifacts |
 | `predictions` | Compact per-window outputs | `(model_run_id, window_id)` via the window FK; JSON probabilities |
 

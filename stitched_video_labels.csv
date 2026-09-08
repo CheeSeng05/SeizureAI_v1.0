@@ -1,0 +1,13 @@
+recording_id,patient_id,clip_index,start_sec,end_sec,label,label_name,source,notes
+stitched-test-001,local-patient-001,1,0.0,5.1,0,non_seizure,manual,N clip
+stitched-test-001,local-patient-001,2,5.1,10.2,0,non_seizure,manual,N clip
+stitched-test-001,local-patient-001,3,10.2,15.3,1,seizure,manual,S clip
+stitched-test-001,local-patient-001,4,15.3,20.4,1,seizure,manual,S clip
+stitched-test-001,local-patient-001,5,20.4,25.5,1,seizure,manual,S clip
+stitched-test-001,local-patient-001,6,25.5,30.6,0,non_seizure,manual,N clip
+stitched-test-001,local-patient-001,7,30.6,35.7,0,non_seizure,manual,N clip
+stitched-test-001,local-patient-001,8,35.7,40.8,1,seizure,manual,S clip
+stitched-test-001,local-patient-001,9,40.8,45.9,0,non_seizure,manual,N clip
+stitched-test-001,local-patient-001,10,45.9,51.0,1,seizure,manual,S clip
+stitched-test-001,local-patient-001,11,51.0,56.1,1,seizure,manual,S clip
+stitched-test-001,local-patient-001,12,56.1,61.2,0,non_seizure,manual,N clip

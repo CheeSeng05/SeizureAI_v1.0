@@ -186,11 +186,19 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
     labels = np.asarray([row["reference_label"] for row in valid_rows], dtype=int)
     probabilities = np.asarray([row["video_probability"] for row in valid_rows], dtype=float)
     metrics = _classification_metrics(labels, probabilities)
+    metrics["evaluated_windows"] = len(valid_rows)
+    metrics["excluded_windows"] = len(rows) - len(valid_rows)
     metrics["annotation_alignment_status"] = annotation["alignment_status"]
-    metrics["classification_label_policy"] = (
-        "VSViG source policy: 0 through EEG onset, transition interval excluded, "
-        "1 from clinical onset onward; no seizure offset was invented."
-    )
+    if annotation.get("label_source") == "interval_csv":
+        metrics["classification_label_policy"] = (
+            "Timestamped interval CSV policy: each model window receives the binary label "
+            "with the largest time overlap; exact ties or uncovered windows are excluded."
+        )
+    else:
+        metrics["classification_label_policy"] = (
+            "VSViG source policy: 0 through EEG onset, transition interval excluded, "
+            "1 from clinical onset onward; no seizure offset was invented."
+        )
     if not rows:
         return metrics
     patient_id = annotation.get("patient_id") or "UNKNOWN"
@@ -201,6 +209,11 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
     ]
     all_probabilities = [float(row["video_probability"]) for row in rows]
     events = probabilities_to_events(windows, all_probabilities, threshold=0.5)
+    # Model detections exist independently of whether ground truth was supplied.
+    # Persist them for labelled runs as well as prediction-only runs so the UI
+    # never mistakes "evaluated against labels" for "no model events".
+    metrics["predicted_event_count"] = len(events)
+    metrics["predicted_events"] = [asdict(event) for event in events]
     eeg_onset = annotation.get("eeg_onset_sec")
     clinical_onset = annotation.get("clinical_onset_sec")
     if eeg_onset is not None and eeg_onset > 0:
@@ -224,7 +237,11 @@ def _video_metrics(rows: Sequence[Mapping[str, Any]], run_details: Mapping[str, 
             metrics["onset_mean_absolute_error_sec"] = "N/A"
     metrics["offset_mean_signed_error_sec"] = "N/A"
     metrics["offset_mean_absolute_error_sec"] = "N/A"
-    metrics["offset_reason"] = "Label.xlsx has no seizure offset annotation."
+    metrics["offset_reason"] = (
+        "Interval CSV may contain multiple seizure offsets; aggregate offset error is not implemented."
+        if annotation.get("label_source") == "interval_csv"
+        else "Label.xlsx has no seizure offset annotation."
+    )
     return metrics
 
 
@@ -373,6 +390,7 @@ def run_video_workflow(
             batch_size=int(video_cfg.get("inference_batch_size", 8)),
             pose_batch_size=int(video_cfg.get("pose_batch_size", 16)),
             pose_input_height=int(video_cfg.get("pose_input_height", 256)),
+            progress_config=dict(config),
         )
         metrics = _video_metrics(rows, run_details)
         augmented = _augment_rows(rows, metadata)
@@ -490,6 +508,7 @@ def run_eeg_workflow(
             checkpoint_path=eeg_checkpoint,
             config=config,
             batch_size=int(eeg_cfg.get("inference_batch_size", 64)),
+            progress_config=config,
         )
         probabilities = np.asarray(prediction["probability"], dtype=float)
         labels = np.asarray(data.binary_labels, dtype=int)

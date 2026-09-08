@@ -201,6 +201,45 @@ class ModeSafeguardTests(unittest.TestCase):
         self.assertEqual(metrics["sensitivity"], "N/A")
         self.assertEqual(metrics["predicted_event_count"], 1)
 
+    def test_video_metrics_keep_model_events_when_labels_are_present(self) -> None:
+        rows = [
+            {"recording_id": "recording-001", "start_sec": 0.0, "end_sec": 1.0,
+             "video_probability": 0.2, "reference_label": 0},
+            {"recording_id": "recording-001", "start_sec": 1.0, "end_sec": 2.0,
+             "video_probability": 0.8, "reference_label": 1},
+        ]
+        metrics = _video_metrics(rows, {"annotation": {
+            "alignment_status": "aligned", "patient_id": "Pat01",
+            "eeg_onset_sec": 0.5, "clinical_onset_sec": 1.0,
+            "seizure_end_sec": None,
+        }})
+
+        self.assertEqual(metrics["predicted_event_count"], 1)
+        self.assertEqual(len(metrics["predicted_events"]), 1)
+        self.assertEqual(metrics["predicted_events"][0]["start_sec"], 1.0)
+
+    def test_interval_csv_labels_support_alternating_stitched_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            labels = Path(directory) / "stitched_labels.csv"
+            labels.write_text(
+                "recording_id,start_sec,end_sec,label,label_name\n"
+                "stitched-test-001,0.0,5.1,0,non_seizure\n"
+                "stitched-test-001,5.1,10.2,N,non_seizure\n"
+                "stitched-test-001,10.2,15.3,S,seizure\n"
+                "stitched-test-001,15.3,20.4,1,seizure\n"
+                "stitched-test-001,20.4,25.5,1,seizure\n"
+                "stitched-test-001,25.5,30.6,0,non_seizure\n",
+                encoding="utf-8",
+            )
+
+            annotation = load_video_annotation(labels, 30.6, recording_id="stitched-test-001")
+
+        self.assertEqual(annotation.alignment_status, "aligned_to_video_time")
+        self.assertEqual(annotation.label_source, "interval_csv")
+        self.assertEqual(reference_label_for_interval(annotation, 0.0, 5.1), 0)
+        self.assertEqual(reference_label_for_interval(annotation, 10.2, 15.3), 1)
+        self.assertEqual(reference_label_for_interval(annotation, 25.5, 30.6), 0)
+
     def test_simulated_pairing_requires_explicit_acknowledgement(self) -> None:
         metadata = result_metadata(
             test_mode="video_only",

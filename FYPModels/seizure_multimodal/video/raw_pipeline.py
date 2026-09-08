@@ -12,8 +12,9 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from ..data_inspection import inspect_mp4, resolved_label_records
+from ..data_inspection import inspect_mp4, resolved_interval_label_records, resolved_label_records
 from .vsvig_adapter import VSViGAdapter
+from ..progress import report_progress
 
 
 PATCH_POINT_ORDER = (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17)
@@ -29,6 +30,87 @@ class VideoAnnotation:
     clinical_onset_sec: float | None
     seizure_end_sec: float | None
     alignment_status: str
+    intervals: tuple[dict[str, Any], ...] = ()
+    label_source: str = "workbook"
+    label_policy: str = "clinical_onset_interval"
+
+
+def _matches_identity(
+    records: list[dict[str, Any]],
+    *,
+    patient_id: str | None,
+    seizure_id: str | None,
+    seizure_type: str | None,
+) -> list[dict[str, Any]]:
+    same = lambda left, right: str(left or "").strip().casefold() == str(right or "").strip().casefold()
+    if patient_id and any(record.get("resolved_PatID") for record in records):
+        records = [record for record in records if same(record.get("resolved_PatID"), patient_id)]
+    if seizure_id and any(record.get("#Seizure") for record in records):
+        records = [record for record in records if same(record.get("#Seizure"), seizure_id)]
+    if seizure_type and any(record.get("resolved_Seizure Type") for record in records):
+        records = [
+            record for record in records if same(record.get("resolved_Seizure Type"), seizure_type)
+        ]
+    return records
+
+
+def _load_interval_csv_annotation(
+    label_path: str | Path,
+    duration_sec: float,
+    *,
+    patient_id: str | None,
+    seizure_id: str | None,
+    seizure_type: str | None,
+    recording_id: str | None,
+) -> VideoAnnotation:
+    records = _matches_identity(
+        resolved_interval_label_records(label_path),
+        patient_id=patient_id,
+        seizure_id=seizure_id,
+        seizure_type=seizure_type,
+    )
+    if recording_id and any(record.get("recording_id") for record in records):
+        records = [record for record in records if str(record.get("recording_id") or "").strip().casefold() == recording_id.strip().casefold()]
+    if not records:
+        return VideoAnnotation(
+            None, None, None, None, None, None, "requires_at_least_one_interval",
+            label_source="interval_csv",
+            label_policy="majority_overlap",
+        )
+    if max(float(record["end_sec"]) for record in records) > duration_sec:
+        status = "out_of_video_range_requires_real_clip_offset"
+    else:
+        status = "aligned_to_video_time"
+    positive_intervals = [record for record in records if int(record["label"]) == 1]
+    first_positive = min((float(record["start_sec"]) for record in positive_intervals), default=None)
+    last_positive_end = max((float(record["end_sec"]) for record in positive_intervals), default=None)
+    first = records[0]
+    intervals = tuple(
+        {
+            "start_sec": float(record["start_sec"]),
+            "end_sec": float(record["end_sec"]),
+            "label": int(record["label"]),
+            "label_name": record.get("label_name") or ("seizure" if int(record["label"]) else "non_seizure"),
+            "source": record.get("source") or "csv",
+        }
+        for record in sorted(records, key=lambda item: (float(item["start_sec"]), float(item["end_sec"])))
+    )
+    return VideoAnnotation(
+        patient_id=str(first.get("resolved_PatID")) if first.get("resolved_PatID") else patient_id,
+        seizure_id=str(first.get("#Seizure")) if first.get("#Seizure") else seizure_id,
+        seizure_type=(
+            str(first.get("resolved_Seizure Type"))
+            if first.get("resolved_Seizure Type")
+            else seizure_type
+        ),
+        eeg_onset_sec=first_positive,
+        clinical_onset_sec=first_positive,
+        seizure_end_sec=last_positive_end,
+        alignment_status=status,
+        intervals=intervals,
+        label_source="interval_csv",
+        label_policy="majority_overlap",
+    )
 
 
 def load_video_annotation(
@@ -38,18 +120,24 @@ def load_video_annotation(
     patient_id: str | None = None,
     seizure_id: str | None = None,
     seizure_type: str | None = None,
+    recording_id: str | None = None,
 ) -> VideoAnnotation:
     if label_path is None:
         return VideoAnnotation(None, None, None, None, None, None, "annotation_file_missing")
+    if Path(label_path).suffix.lower() == ".csv":
+        return _load_interval_csv_annotation(
+            label_path,
+            duration_sec,
+            patient_id=patient_id,
+            seizure_id=seizure_id,
+            seizure_type=seizure_type,
+            recording_id=recording_id,
+        )
     records = resolved_label_records(label_path)
     if patient_id and seizure_id:
-        records = [
-            record
-            for record in records
-            if record.get("resolved_PatID") == patient_id
-            and str(record.get("#Seizure")) == seizure_id
-            and (seizure_type is None or record.get("resolved_Seizure Type") == seizure_type)
-        ]
+        records = _matches_identity(
+            records, patient_id=patient_id, seizure_id=seizure_id, seizure_type=seizure_type
+        )
     if len(records) != 1:
         return VideoAnnotation(None, None, None, None, None, None, "requires_exactly_one_record")
     record = records[0]
@@ -85,6 +173,18 @@ def reference_label_for_interval(
 ) -> int | None:
     if annotation.alignment_status == "out_of_video_range_requires_real_clip_offset":
         return None
+    if annotation.intervals:
+        overlaps = {0: 0.0, 1: 0.0}
+        for interval in annotation.intervals:
+            overlap = max(
+                0.0,
+                min(end_sec, float(interval["end_sec"])) - max(start_sec, float(interval["start_sec"])),
+            )
+            if overlap > 0:
+                overlaps[int(interval["label"])] += overlap
+        if overlaps[0] == overlaps[1]:
+            return None
+        return 1 if overlaps[1] > overlaps[0] else 0
     onset = annotation.clinical_onset_sec
     eeg_onset = annotation.eeg_onset_sec
     if eeg_onset is not None and end_sec <= eeg_onset:
@@ -403,6 +503,7 @@ def predict_video_file(
     batch_size: int = 8,
     pose_batch_size: int = 16,
     pose_input_height: int = 256,
+    progress_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray, dict[str, Any]]:
     if clip_frames != 30:
         raise ValueError("The pretrained VSViG checkpoint requires exactly 30 frames per clip")
@@ -421,7 +522,13 @@ def predict_video_file(
         patient_id=annotation_patient_id,
         seizure_id=annotation_seizure_id,
         seizure_type=annotation_seizure_type,
+        recording_id=recording_id,
     )
+    if label_path and annotation.alignment_status in {
+        "requires_at_least_one_interval", "requires_exactly_one_record", "onset_missing",
+        "out_of_video_range_requires_real_clip_offset",
+    }:
+        raise ValueError(f"Video label validation failed: {annotation.alignment_status}. Check label identity and video-local timestamps.")
     pose = LightweightOpenPose(
         source_directory=pose_source,
         checkpoint_path=pose_checkpoint,
@@ -444,6 +551,12 @@ def predict_video_file(
             frame_index = 0
             processed_clips = 0
             started = time.monotonic()
+            total_clips = metadata.frame_count // clip_frames
+            report_progress(
+                progress_config or {}, stage="video_inference",
+                label="Processing video clips", completed=0, total=total_clips,
+                elapsed_sec=0.0,
+            )
             while True:
                 clip_start = frame_index
                 frames: list[np.ndarray] = []
@@ -477,6 +590,12 @@ def predict_video_file(
                     )
                 )
                 processed_clips += 1
+                elapsed = time.monotonic() - started
+                report_progress(
+                    progress_config or {}, stage="video_inference",
+                    label="Processing video clips", completed=processed_clips,
+                    total=total_clips, elapsed_sec=elapsed,
+                )
                 if len(pending) >= batch_size:
                     new_rows, new_embeddings = _flush_clips(
                         adapter,
@@ -490,8 +609,6 @@ def predict_video_file(
                     embeddings.extend(new_embeddings)
                     pending = []
                 if processed_clips % 100 == 0:
-                    elapsed = time.monotonic() - started
-                    total_clips = metadata.frame_count // clip_frames
                     print(
                         f"video progress: {processed_clips}/{total_clips} clips "
                         f"({processed_clips / max(1, total_clips):.1%}), {elapsed:.1f}s elapsed",

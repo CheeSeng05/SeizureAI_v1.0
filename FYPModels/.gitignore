@@ -9,6 +9,7 @@ __pycache__/
 
 # Local-only sample/raw data. Keep these files on your computer, not in Git.
 test_video/
+test_data/
 datasets/
 results/
 *.mp4
