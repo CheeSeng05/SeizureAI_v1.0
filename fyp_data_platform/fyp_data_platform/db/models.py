@@ -73,6 +73,8 @@ class Recording(TimestampMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(300), primary_key=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    deleting: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id"), nullable=False, index=True)
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"), nullable=False, index=True)
     source_recording_id: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -168,6 +170,8 @@ class ModelRun(TimestampMixin, Base):
     __tablename__ = "model_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    deleting: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     model_type: Mapped[str | None] = mapped_column(String(100))
     model_version: Mapped[str | None] = mapped_column(String(100))

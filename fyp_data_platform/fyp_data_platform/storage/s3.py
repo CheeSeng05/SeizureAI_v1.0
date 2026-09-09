@@ -45,6 +45,9 @@ class S3Storage(StorageBackend):
         key = normalize_key(key)
         return f"{self.prefix}/{key}" if self.prefix else key
 
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
+
     def put_file(self, source: Path, key: str, *, sha256: str | None = None) -> ObjectMetadata:
         source = Path(source)
         if not source.is_file():

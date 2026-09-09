@@ -60,6 +60,9 @@ class SeizureModelIntegration:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelRunResult:
         total_started = time.perf_counter()
+        from fyp_data_platform.lifecycle import require_available
+        with self.session_factory() as session:
+            require_available(session, dataset_id, recording_id)
         timings: dict[str, float] = {}
         def progress(stage: str, label: str, percent: float, **extra: Any) -> None:
             if progress_callback:

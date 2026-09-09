@@ -27,12 +27,28 @@ class FakeS3:
     def download_file(self, bucket, key, destination):
         Path(destination).write_bytes(self.objects[(bucket, key)][0])
 
+    def delete_object(self, Bucket, Key):
+        self.objects.pop((Bucket, Key), None)
+
     def get_object(self, Bucket, Key, Range):
         start, end = (int(value) for value in Range.removeprefix("bytes=").split("-"))
         stream = BytesIO(self.objects[(Bucket, Key)][0][start : end + 1])
         stream.iter_chunks = lambda chunk_size: iter(lambda: stream.read(chunk_size), b"")
         return {"Body": stream}
 
+
+def test_delete_removes_only_selected_prefixed_object(tmp_path):
+    source = tmp_path / 'video.mp4'
+    source.write_bytes(b'original')
+    client = FakeS3()
+    storage = S3Storage('bucket', prefix='managed', client=client)
+    storage.put_file(source, 'one/video.mp4')
+    storage.put_file(source, 'two/video.mp4')
+    storage.delete('one/video.mp4')
+    storage.delete('one/video.mp4')
+    assert storage.stat('one/video.mp4') is None
+    assert storage.stat('two/video.mp4') is not None
+    assert source.read_bytes() == b'original'
 
 def test_s3_uses_checksum_metadata_encryption_and_skips_duplicate(tmp_path: Path) -> None:
     source = tmp_path / "object.bin"

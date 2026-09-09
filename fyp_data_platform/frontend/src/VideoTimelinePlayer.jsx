@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { PlayCircle } from 'lucide-react';
 import { Empty, Notice, formatTime, percent } from './components';
+import SkeletonOverlay from './SkeletonOverlay';
 
 function markerPosition(value, start, end) {
   if (value === null || value === undefined || end <= start || value < start || value > end) return null;
@@ -52,7 +53,10 @@ export default function VideoTimelinePlayer({ source, windows = [], events = [],
   return <div className="video-analysis">
     <div className="video-layout">
       <div className="video-frame">
+        <div className="skeleton-stage">
         {source.browser_playable && !playbackError ? <video ref={videoRef} controls preload="metadata" src={source.url} onLoadedMetadata={(event) => setVideoDuration(event.currentTarget.duration)} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} onError={() => setPlaybackError(true)} /> : <Notice tone="danger" title="Browser preview unavailable"><p>This file's format or codec cannot be played reliably in the browser. The original file remains available to download.</p></Notice>}
+        <SkeletonOverlay videoRef={videoRef} url={source.pose_url} />
+        </div>
         <div className="video-caption"><strong>{source.filename}</strong><span>{formatTime(currentTime)} / {formatTime(duration)}</span></div>
       </div>
       <div className="detection-sidebar">

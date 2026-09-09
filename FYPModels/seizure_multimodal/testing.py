@@ -391,6 +391,7 @@ def run_video_workflow(
             pose_batch_size=int(video_cfg.get("pose_batch_size", 16)),
             pose_input_height=int(video_cfg.get("pose_input_height", 256)),
             progress_config=dict(config),
+            pose_output_path=output / "pose_keypoints.json",
         )
         metrics = _video_metrics(rows, run_details)
         augmented = _augment_rows(rows, metadata)
