@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -78,23 +78,33 @@ class PreprocessingComparisonTest(unittest.TestCase):
         row = comparison_row(build_experiments()[0], Path("clip.mp4"), metrics, metrics)
         self.assertEqual(row["delta_face_landmark_fraction"], 0)
 
-    def _run_extraction(self, root: Path, diagnostics_only: bool, max_duration_seconds=None):
+    def _run_extraction(self, root: Path, diagnostics_only: bool, max_duration_seconds=None,
+                        *, progress_config=None, fail_face_creation=False,
+                        fail_inference=False, resources=None):
         frame = np.zeros((20, 20, 3), dtype=np.uint8)
         frames = iter([frame.copy() for _ in range(7)])
-        capture = SimpleNamespace(isOpened=lambda: True, get=lambda key: 5.0,
+        capture = SimpleNamespace(isOpened=lambda: True, get=lambda key: {1: 5.0, 3: 7, 4: 20, 5: 20}[key],
                                   read=lambda: (True, image) if (image := next(frames, None)) is not None else (False, None),
-                                  release=lambda: None)
+                                  release=Mock())
         cv2 = SimpleNamespace(VideoCapture=lambda path: capture, CAP_PROP_FPS=1,
+                              CAP_PROP_FRAME_COUNT=3, CAP_PROP_FRAME_WIDTH=4, CAP_PROP_FRAME_HEIGHT=5,
                               COLOR_BGR2RGB=2, cvtColor=lambda image, code: image)
         point = SimpleNamespace(x=.5, y=.5, z=0, visibility=1, presence=1)
         results = iter([SimpleNamespace(pose_landmarks=[[point] * 33] if found else [])
                         for found in [True, True, False, False, False, False, True]])
-        pose_api = SimpleNamespace(detect_for_video=lambda *args: next(results), close=lambda: None)
-        face_api = SimpleNamespace(detect_for_video=lambda *args: object(), close=lambda: None)
+        pose_api = SimpleNamespace(
+            detect_for_video=Mock(side_effect=RuntimeError("inference failed") if fail_inference else results),
+            close=Mock(),
+        )
+        face_api = SimpleNamespace(detect_for_video=lambda *args: object(), close=Mock())
+        if resources is not None:
+            resources.update(capture=capture, pose=pose_api, face=face_api)
         options = {}
 
         def create(kind, value):
             options[kind] = vars(value)
+            if kind == "face" and fail_face_creation:
+                raise RuntimeError("face initialization failed")
             return pose_api if kind == "pose" else face_api
 
         vision = SimpleNamespace(
@@ -122,6 +132,7 @@ class PreprocessingComparisonTest(unittest.TestCase):
                 min_face_presence_confidence=.65, min_face_tracking_confidence=.7,
                 diagnostics_only=diagnostics_only,
                 max_duration_seconds=max_duration_seconds,
+                progress_config=progress_config,
             )
         return result, options
 
@@ -161,6 +172,57 @@ class PreprocessingComparisonTest(unittest.TestCase):
             with Path(report["frames_path"]).open() as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(float(rows[-1]["time_sec"]), .8)
+
+    def test_run_record_and_progress_are_written_in_both_output_modes(self):
+        for diagnostics_only in (False, True):
+            with self.subTest(diagnostics_only=diagnostics_only), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                progress = root / "progress.json"
+                result, _ = self._run_extraction(
+                    root, diagnostics_only=diagnostics_only,
+                    progress_config={"testing": {"progress_file": str(progress)}},
+                )
+                record = json.loads(Path(result.run_record_path).read_text())
+                self.assertEqual(record["record_type"], "preprocessing")
+                self.assertEqual(record["inputs"]["video"]["sha256"],
+                                 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                self.assertEqual(record["source_metadata"]["fps"], 5.0)
+                self.assertEqual(record["source_metadata"]["frame_count"], 7)
+                self.assertIn("No moov", record["source_metadata"]["inspection_error"])
+                self.assertEqual(record["settings"]["split_seed"], 42)
+                self.assertEqual(record["settings"]["diagnostics_only"], diagnostics_only)
+                self.assertEqual(record["outputs"]["manifest_path"], result.manifest_path)
+                self.assertEqual(record["software_versions"]["numpy"], np.__version__)
+                snapshot = json.loads(progress.read_text())
+                self.assertEqual(snapshot["stage"], "facial_preprocessing")
+                self.assertEqual(snapshot["completed_units"], 7)
+                self.assertEqual(snapshot["percent"], 100)
+
+    def test_failed_face_initialization_closes_pose_and_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            resources = {}
+            with self.assertRaisesRegex(RuntimeError, "face initialization failed"):
+                self._run_extraction(Path(temporary), True, fail_face_creation=True, resources=resources)
+            resources["pose"].close.assert_called_once_with()
+            resources["capture"].release.assert_called_once_with()
+            resources["face"].close.assert_not_called()
+            self.assertFalse(list(Path(temporary).rglob("runs/*.json")))
+
+    def test_failed_inference_closes_all_resources_without_reporting_completion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            progress = root / "progress.json"
+            resources = {}
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                self._run_extraction(
+                    root, True, fail_inference=True, resources=resources,
+                    progress_config={"testing": {"progress_file": str(progress)}},
+                )
+            resources["pose"].close.assert_called_once_with()
+            resources["face"].close.assert_called_once_with()
+            resources["capture"].release.assert_called_once_with()
+            self.assertEqual(json.loads(progress.read_text())["percent"], 0)
+            self.assertFalse(list(root.rglob("runs/*.json")))
 
 
 if __name__ == "__main__":

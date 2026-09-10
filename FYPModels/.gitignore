@@ -19,6 +19,12 @@ results/
 Epileptic Seizure Recognition.csv
 Label.xlsx
 
+# Facial model module, comparison only
+facial_resnet/compare_preprocessing.py
+facial_resnet/prepare_dataset.py
+facial_resnet/preprocess_diagnostics.py
+facial_resnet/preprocess_options.py
+
 # New private training outputs/checkpoints should not be committed accidentally.
 checkpoints/fyp/**/*.pth
 checkpoints/fyp/**/*.pt

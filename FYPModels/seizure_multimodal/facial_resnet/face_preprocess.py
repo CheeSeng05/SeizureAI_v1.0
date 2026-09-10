@@ -10,24 +10,27 @@ import csv
 import hashlib
 import json
 import math
+import sys
 import time
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 
-if __package__:
-    from .preprocess_diagnostics import frame_diagnostics, write_diagnostics
-    from .preprocess_options import (
-        add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
-    )
-else:
+if not __package__:
     # Preserve the original standalone `python face_preprocess.py` entry point.
-    from preprocess_diagnostics import frame_diagnostics, write_diagnostics
-    from preprocess_options import (
-        add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
-    )
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "seizure_multimodal.facial_resnet"
+
+from ..progress import report_progress
+from ..reproducibility import build_preprocessing_record, save_run_record
+from ..video.io import iter_sampled_frames, open_video
+from .preprocess_diagnostics import frame_diagnostics, write_diagnostics
+from .preprocess_options import (
+    add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
+)
 
 
 FACE_LANDMARK_PAIRS = (
@@ -76,6 +79,7 @@ class PreprocessSummary:
     windows_written: int
     manifest_path: str | None
     diagnostics_path: str | None = None
+    run_record_path: str | None = None
 
 
 def _patient_split(patient_id: str, seed: int = 42) -> str:
@@ -510,8 +514,14 @@ def extract_video(
     preview_delay_ms: int = 1,
     diagnostics_only: bool = False,
     max_duration_seconds: float | None = None,
+    progress_config: Mapping[str, Any] | None = None,
 ) -> PreprocessSummary:
-    """Extract model-ready face crops and landmarks; discard partial windows."""
+    """Extract model-ready face crops and landmarks; discard partial windows.
+
+    The caller supplies discovered source/identity information. Optional progress
+    uses the shared ``testing.progress_file`` configuration. Each successful run
+    records input hashes, source metadata, settings and software versions.
+    """
     pose_model_path = Path(pose_model_path).resolve()
     face_model_path = Path(face_model_path).resolve()
 
@@ -565,6 +575,11 @@ def extract_video(
     
     if not sample_id or "__" in sample_id or Path(sample_id).name != sample_id or sample_id in {".", ".."}:
         raise ValueError("sample_id must be a non-empty filename without '__' or directory components")
+
+    patient = patient_id or sample_id.split("_", 1)[0]
+    assigned_split = split or _patient_split(patient, split_seed)
+    if assigned_split not in {"train", "validation", "test", "unassigned"}:
+        raise ValueError(f"Invalid split: {assigned_split!r}")
     
     try:
         import cv2
@@ -583,14 +598,6 @@ def extract_video(
         pose_dir.mkdir(parents=True, exist_ok=True)
         face_dir.mkdir(parents=True, exist_ok=True)
         geometry_dir.mkdir(parents=True, exist_ok=True)
-    capture = cv2.VideoCapture(str(source))
-
-    if not capture.isOpened():
-        raise OSError(f"Video cannot be opened: {source}")
-    source_fps = float(capture.get(cv2.CAP_PROP_FPS))
-    if not np.isfinite(source_fps) or source_fps <= 0:
-        capture.release()
-        raise ValueError(f"Video reports an invalid FPS: {source_fps!r}")
 
     poses: list[np.ndarray] = []
     faces: list[np.ndarray] = []
@@ -606,60 +613,93 @@ def extract_video(
     times: list[float] = []
     diagnostic_rows: list[dict[str, Any]] = []
 
-    next_sample, frame_index = 0.0, 0
-    vision = mp.tasks.vision
     base_options = mp.tasks.BaseOptions
+    FaceLandmarker = mp.tasks.vision.FaceLandmarker
+    FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+    PoseLandmarker = mp.tasks.vision.PoseLandmarker
+    PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+    RunningMode = mp.tasks.vision.RunningMode
 
-    pose_options = vision.PoseLandmarkerOptions(
+    pose_options = PoseLandmarkerOptions(
         base_options=base_options(
             model_asset_path=str(pose_model_path),
         ),
-        running_mode=vision.RunningMode.VIDEO,
+        running_mode=RunningMode.VIDEO,
         num_poses=max_poses,
         min_pose_detection_confidence=min_pose_detection_confidence,
         min_pose_presence_confidence=min_pose_presence_confidence,
         min_tracking_confidence=min_pose_tracking_confidence,
     )
 
-    face_options = vision.FaceLandmarkerOptions(
+    face_options = FaceLandmarkerOptions(
         base_options=base_options(
             model_asset_path=str(face_model_path),
         ),
-        running_mode=vision.RunningMode.VIDEO,
+        running_mode=RunningMode.VIDEO,
         num_faces=1,
         min_face_detection_confidence=min_face_detection_confidence,
         min_face_presence_confidence=min_face_presence_confidence,
         min_tracking_confidence=min_face_tracking_confidence,
-        output_face_blendshapes=False,
-        output_facial_transformation_matrixes=False,
+        output_face_blendshapes=True,
+        output_facial_transformation_matrixes=True,
     )
 
-    pose_api = vision.PoseLandmarker.create_from_options(
-        pose_options
-    )
-    face_api = vision.FaceLandmarker.create_from_options(
-        face_options
-    )
+    with ExitStack() as resources:
+        capture, metadata = resources.enter_context(open_video(source, cv2=cv2))
+        source_fps = metadata.fps
+        settings = {
+            **tuning, "source_video": str(source), "pose_model_path": str(pose_model_path),
+            "face_model_path": str(face_model_path), "fps": fps, "source_fps": source_fps,
+            "window_seconds": window_seconds, "stride_seconds": stride_seconds,
+            "face_size": face_size, "face_margin": face_margin, "patient_roi": patient_roi,
+            "max_poses": max_poses, "head_margin": head_margin, "max_head_jump": max_head_jump,
+            "running_mode": "VIDEO", "diagnostics_only": diagnostics_only,
+            "max_duration_seconds": max_duration_seconds,
+            "sample_id": sample_id, "dataset": dataset, "patient_id": patient,
+            "patient_id_source": "argument" if patient_id else "sample_id_prefix",
+            "label": label, "split": assigned_split, "split_seed": split_seed,
+            "split_policy": "explicit" if split else "patient_sha256_70_15_15",
+            "append_manifest": append_manifest, "preview": preview,
+            "preview_delay_ms": preview_delay_ms,
+        }
+        run_record = build_preprocessing_record(
+            pipeline="facial_resnet", sample_id=sample_id,
+            inputs={"video": source, "pose_model": pose_model_path, "face_model": face_model_path},
+            settings=settings, source_metadata=metadata.as_dict(),
+            software_versions={
+                "python": sys.version.split()[0], "numpy": np.__version__,
+                "opencv": getattr(cv2, "__version__", "unknown"),
+                "mediapipe": getattr(mp, "__version__", "unknown"),
+            },
+        )
+        pose_api = PoseLandmarker.create_from_options(pose_options)
+        resources.callback(pose_api.close)
+        face_api = FaceLandmarker.create_from_options(face_options)
+        resources.callback(face_api.close)
+        if preview:
+            resources.callback(cv2.destroyAllWindows)
 
-    smoothed_box: np.ndarray | None = None
-    previous_face_gray: np.ndarray | None = None
-    missed_face_frames = 0
-    preview_active = preview
-    tracked_head_center: tuple[float, float] | None = None
-    last_detected_box_sec: float | None = None
-    processing_start = time.perf_counter()
+        duration = metadata.duration_sec
+        if max_duration_seconds is not None:
+            duration = min(duration, max_duration_seconds) if duration is not None else max_duration_seconds
+        estimated_samples = math.ceil(duration * min(fps, source_fps)) if duration is not None else 0
+        processing_start = time.perf_counter()
+        report_progress(
+            progress_config or {}, stage="facial_preprocessing", label="Extracting face windows",
+            completed=0, total=estimated_samples, elapsed_sec=0.0,
+        )
+        last_progress_time = processing_start
+        smoothed_box: np.ndarray | None = None
+        previous_face_gray: np.ndarray | None = None
+        missed_face_frames = 0
+        preview_active = preview
+        tracked_head_center: tuple[float, float] | None = None
+        last_detected_box_sec: float | None = None
 
-    try:
-        while True:
-            ok, bgr = capture.read()
-            if not ok:
-                break
-            time_sec = frame_index / source_fps
-            frame_index += 1
-            if max_duration_seconds is not None and time_sec >= max_duration_seconds:
-                break
-            if time_sec + 1e-9 < next_sample:
-                continue
+        for time_sec, bgr in iter_sampled_frames(
+            capture, source_fps=source_fps, fps=fps,
+            max_duration_seconds=max_duration_seconds,
+        ):
 
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             rgb = np.ascontiguousarray(rgb)
@@ -708,6 +748,43 @@ def extract_video(
                         data=np.ascontiguousarray(head_rgb),
                     )
                     face_result = face_api.detect_for_video(head_image, timestamp_ms)
+
+                    if face_result.face_landmarks:
+                        # Face 0: landmarks with x, y, z attributes
+                        landmarks = face_result.face_landmarks[0]
+
+                        original_points = []
+                        for point in landmarks:
+                            x_original = point.x * head_rgb.shape[1] + actual_head_box[0]
+                            y_original = point.y * head_rgb.shape[0] + actual_head_box[1]
+                            original_points.append([x_original, y_original])
+
+                        landmark_xy_original = np.asarray(
+                            original_points, dtype=np.float32
+                        )
+                        first_point = landmarks[0]
+                        print("Landmark 0:", first_point.x, first_point.y, first_point.z)
+
+                        # Convert all landmarks to a NumPy array: [478, 3]
+                        landmark_xyz = np.asarray(
+                            [[point.x, point.y, point.z] for point in landmarks],
+                            dtype=np.float32,
+                        )
+
+                        # Face 0: expression names mapped to scores
+                        if face_result.face_blendshapes:
+                            blendshapes = {
+                                category.category_name: category.score
+                                for category in face_result.face_blendshapes[0]
+                            }
+                            print("Blendshapes:", blendshapes)
+
+                        # Face 0: transformation matrix
+                        if face_result.facial_transformation_matrixes:
+                            matrix = face_result.facial_transformation_matrixes[0]
+                            print("Transformation matrix:", matrix)
+                    else:
+                        print("No face detected")
                     geometry, has_face = _face_geometry(face_result)
                     local_box = _face_box(
                         face_result,
@@ -765,72 +842,72 @@ def extract_video(
             face_region_hits.append(smoothed_box is not None)
             pose_head_fallbacks.append(used_pose_fallback)
             face_box_reused.append(reused); times.append(time_sec)
-            next_sample += 1 / fps
-    finally:
-        capture.release(); pose_api.close(); face_api.close()
-        if preview:
-            cv2.destroyAllWindows()
+            now = time.perf_counter()
+            if now - last_progress_time >= 1.0:
+                report_progress(
+                    progress_config or {}, stage="facial_preprocessing", label="Extracting face windows",
+                    completed=len(times), total=estimated_samples,
+                    elapsed_sec=now - processing_start,
+                )
+                last_progress_time = now
 
     processing_seconds = time.perf_counter() - processing_start
     diagnostics_path = write_diagnostics(
         destination / "diagnostics", sample_id, diagnostic_rows,
-        settings={
-            **tuning, "source_video": str(source), "pose_model_path": str(pose_model_path),
-            "face_model_path": str(face_model_path), "fps": fps, "source_fps": source_fps,
-            "window_seconds": window_seconds, "stride_seconds": stride_seconds,
-            "face_size": face_size, "face_margin": face_margin, "patient_roi": patient_roi,
-            "max_poses": max_poses, "head_margin": head_margin, "max_head_jump": max_head_jump,
-            "running_mode": "VIDEO", "diagnostics_only": diagnostics_only,
-            "max_duration_seconds": max_duration_seconds,
-        }, processing_seconds=processing_seconds,
+        settings=settings, processing_seconds=processing_seconds,
     )
-    if diagnostics_only:
-        summary = PreprocessSummary(str(source), source_fps, fps, len(times), 0, None, str(diagnostics_path))
-        print(json.dumps(asdict(summary), indent=2))
-        return summary
-
-    length = max(1, round(fps * window_seconds))
-    stride = max(1, round(fps * stride_seconds))
-    patient = patient_id or sample_id.split("_", 1)[0]
-    assigned_split = split or _patient_split(patient, split_seed)
-
-    if assigned_split not in {"train", "validation", "test", "unassigned"}:
-        raise ValueError(f"Invalid split: {assigned_split!r}")
-    
-    pose_array, face_array = np.asarray(poses, np.float32), np.asarray(faces, np.float32)
-    geometry_array = np.asarray(face_geometries, np.float32)
     rows: list[dict[str, Any]] = []
+    manifest = None
+    if not diagnostics_only:
+        length = max(1, round(fps * window_seconds))
+        stride = max(1, round(fps * stride_seconds))
+        pose_array, face_array = np.asarray(poses, np.float32), np.asarray(faces, np.float32)
+        geometry_array = np.asarray(face_geometries, np.float32)
 
-    for start in _window_starts(len(poses), length, stride):
-        stop, start_sec = start + length, times[start]
-        end_sec = start_sec + window_seconds
-        window_id = f"{sample_id}__{round(start_sec * 1000):010d}__{round(end_sec * 1000):010d}"
-        pose_path, face_path = pose_dir / f"{window_id}.npy", face_dir / f"{window_id}.npy"
-        geometry_path = geometry_dir / f"{window_id}.npy"
-        np.save(pose_path, pose_array[start:stop], allow_pickle=False)
-        np.save(face_path, face_array[start:stop], allow_pickle=False)
-        np.save(geometry_path, geometry_array[start:stop], allow_pickle=False)
-        rows.append({
-            "window_id": window_id, "dataset": dataset, "patient_id": patient,
-            "recording_id": sample_id, "source_video": str(source),
-            "start_sec": f"{start_sec:.6f}", "end_sec": f"{end_sec:.6f}",
-            "label": label, "split": assigned_split, "sampled_fps": fps,
-            "frame_count": length, "pose_path": str(pose_path.relative_to(destination)),
-            "face_path": str(face_path.relative_to(destination)),
-            "face_geometry_path": str(geometry_path.relative_to(destination)),
-            "face_size": face_size,
-            "pose_detection_fraction": f"{np.mean(pose_hits[start:stop]):.6f}",
-            "face_detection_fraction": f"{np.mean(face_hits[start:stop]):.6f}",
-            "face_region_fraction": f"{np.mean(face_region_hits[start:stop]):.6f}",
-            "face_landmark_fraction": f"{np.mean(face_hits[start:stop]):.6f}",
-            "pose_head_fallback_fraction": f"{np.mean(pose_head_fallbacks[start:stop]):.6f}",
-            "face_box_reused_fraction": f"{np.mean(face_box_reused[start:stop]):.6f}",
-        })
-    manifest = destination / "video_manifest.csv"
-    _write_rows(manifest, rows, append=append_manifest)
-    summary = PreprocessSummary(str(source), source_fps, fps, len(poses), len(rows), str(manifest), str(diagnostics_path))
+        for start in _window_starts(len(poses), length, stride):
+            stop, start_sec = start + length, times[start]
+            end_sec = start_sec + window_seconds
+            window_id = f"{sample_id}__{round(start_sec * 1000):010d}__{round(end_sec * 1000):010d}"
+            pose_path, face_path = pose_dir / f"{window_id}.npy", face_dir / f"{window_id}.npy"
+            geometry_path = geometry_dir / f"{window_id}.npy"
+            np.save(pose_path, pose_array[start:stop], allow_pickle=False)
+            np.save(face_path, face_array[start:stop], allow_pickle=False)
+            np.save(geometry_path, geometry_array[start:stop], allow_pickle=False)
+            rows.append({
+                "window_id": window_id, "dataset": dataset, "patient_id": patient,
+                "recording_id": sample_id, "source_video": str(source),
+                "start_sec": f"{start_sec:.6f}", "end_sec": f"{end_sec:.6f}",
+                "label": label, "split": assigned_split, "sampled_fps": fps,
+                "frame_count": length, "pose_path": str(pose_path.relative_to(destination)),
+                "face_path": str(face_path.relative_to(destination)),
+                "face_geometry_path": str(geometry_path.relative_to(destination)),
+                "face_size": face_size,
+                "pose_detection_fraction": f"{np.mean(pose_hits[start:stop]):.6f}",
+                "face_detection_fraction": f"{np.mean(face_hits[start:stop]):.6f}",
+                "face_region_fraction": f"{np.mean(face_region_hits[start:stop]):.6f}",
+                "face_landmark_fraction": f"{np.mean(face_hits[start:stop]):.6f}",
+                "pose_head_fallback_fraction": f"{np.mean(pose_head_fallbacks[start:stop]):.6f}",
+                "face_box_reused_fraction": f"{np.mean(face_box_reused[start:stop]):.6f}",
+            })
+        manifest = destination / "video_manifest.csv"
+        _write_rows(manifest, rows, append=append_manifest)
+    run_record_path = destination / "runs" / f"{sample_id}.json"
+    summary = PreprocessSummary(
+        str(source), source_fps, fps, len(times), len(rows),
+        str(manifest) if manifest is not None else None,
+        str(diagnostics_path), str(run_record_path),
+    )
+    save_run_record(
+        {**run_record, "outputs": asdict(summary), "processing_seconds": processing_seconds},
+        run_record_path,
+    )
+    report_progress(
+        progress_config or {}, stage="facial_preprocessing", label="Face preprocessing complete",
+        completed=len(times), total=len(times), elapsed_sec=time.perf_counter() - processing_start,
+    )
     print(json.dumps(asdict(summary), indent=2))
     return summary
+
 
 
 def main() -> None:
@@ -839,6 +916,8 @@ def main() -> None:
     parser.add_argument("--sample-id"); parser.add_argument("--patient-id")
     parser.add_argument("--label", default="0"); parser.add_argument("--dataset", default="seizure_video")
     parser.add_argument("--split", choices=("train", "validation", "test", "unassigned"))
+    parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--progress-file", help="Write shared JSON progress snapshots to this path.")
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument("--window-seconds", type=float, default=8.0)
     parser.add_argument("--stride-seconds", type=float)
@@ -908,6 +987,7 @@ def main() -> None:
             face_model_path=args.face_model,
             stride_seconds=args.stride_seconds,
             patient_id=args.patient_id, label=args.label, dataset=args.dataset, split=args.split,
+            split_seed=args.split_seed,
             append_manifest=args.append_manifest,
             face_size=args.face_size, face_margin=args.face_margin,
             **tuning_kwargs(args),
@@ -918,7 +998,8 @@ def main() -> None:
             preview=args.preview,
             preview_delay_ms=args.preview_delay_ms,
             diagnostics_only=args.diagnostics_only,
-            max_duration_seconds=args.max_duration_seconds)
+            max_duration_seconds=args.max_duration_seconds,
+            progress_config={"testing": {"progress_file": args.progress_file}})
     
 
 

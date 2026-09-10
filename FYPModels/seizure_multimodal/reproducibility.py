@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .checkpoints.provenance import sha256_file
+
 
 REQUIRED_RUN_FIELDS = (
     "experiment_id",
@@ -27,6 +29,32 @@ def build_run_record(values: Mapping[str, Any]) -> dict[str, Any]:
     if missing:
         raise ValueError(f"Run metadata is missing fields: {missing}")
     return {**dict(values), "timestamp_utc": datetime.now(timezone.utc).isoformat()}
+
+
+def build_preprocessing_record(
+    *, pipeline: str, sample_id: str, inputs: Mapping[str, str | Path],
+    settings: Mapping[str, Any], source_metadata: Mapping[str, Any],
+    software_versions: Mapping[str, str],
+) -> dict[str, Any]:
+    """Record preprocessing inputs without inventing training/fusion fields.
+
+    Hashes identify the input bytes; they do not verify patient identity or
+    guarantee deterministic inference across hardware and library versions.
+    """
+    return {
+        "schema_version": 1,
+        "record_type": "preprocessing",
+        "pipeline": pipeline,
+        "sample_id": sample_id,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "inputs": {
+            name: {"path": str(Path(path).resolve()), "sha256": sha256_file(path)}
+            for name, path in inputs.items()
+        },
+        "settings": dict(settings),
+        "source_metadata": dict(source_metadata),
+        "software_versions": dict(software_versions),
+    }
 
 
 def save_run_record(record: Mapping[str, Any], path: str | Path) -> None:

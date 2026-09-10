@@ -81,6 +81,40 @@ manifest rows are not intended to be duplicated.
 
 ### Comparing MediaPipe preprocessing settings
 
+Facial preprocessing uses `video/io.py` for decoder lifetime and frame sampling.
+The decoder supplements its OpenCV metadata with `data_inspection.inspect_mp4`
+when the input is an MP4-compatible container. Inspection failures are recorded
+and OpenCV decoding remains available for unsupported MP4 layouts or other
+containers. Sampling still uses `frame_index / source_fps`; MP4 average FPS and
+variable-frame-rate status are recorded separately, without claiming support
+for presentation timestamps.
+
+Every successful extraction also writes `runs/<sample_id>.json`, including
+SHA-256 hashes of the video and both task models, software versions, source
+metadata, resolved patient/split information, preprocessing settings and output
+paths. `PreprocessSummary.run_record_path` points to this record. Input hashing
+adds file reads before inference and is excluded from `processing_fps`. Hashes
+identify file contents; the record distinguishes caller-supplied patient IDs
+from the legacy sample-ID prefix fallback.
+
+Add `--progress-file results/facial_head_smoke/progress.json` to the command
+above for optional status snapshots. Python callers can pass
+`progress_config={"testing": {"progress_file": "results/progress.json"}}`, matching
+the raw-video workflow. Updates are throttled to once per second during inference;
+the final snapshot is written after output files and the run record are saved.
+The CLI also accepts `--split-seed` (default 42) for automatic patient splits.
+
+Keep these module responsibilities when extending preprocessing:
+
+| Module | Responsibility and recommended boundary |
+|---|---|
+| `data_inspection.py` | Read and validate metadata/label schemas. If it grows, separate MP4, EEG and label inspectors behind the existing public functions. Keep frame decoding and model inference out. |
+| `discovery.py` | Resolve configured sources and verify provenance before calling preprocessing. Pass resolved paths and identity to `extract_video`; avoid rediscovering inputs inside its frame loop. Share inspected metadata/hash results with `inspection_bundle` to avoid its repeated reads. |
+| `progress.py` | Serialize progress and ETA only. Keep update frequency and work-unit counts in the caller; use a separate progress file per concurrent worker. A future path/writer interface could remove the dependency on `testing.progress_file`. |
+| `reproducibility.py` | Build and save stage-specific records. Use `build_preprocessing_record` for preprocessing and retain the stricter `build_run_record` schema for experiments. Reuse the shared provenance hash helper. |
+| `video/io.py` | Own capture cleanup and sampling. `raw_pipeline.py` and dataset duration checks can adopt `open_video` next while keeping their own clip/annotation policies. Implement presentation-timestamp sampling here if variable-frame-rate support is required. |
+| `facial_resnet/face_preprocess.py` | Own patient selection, face/pose extraction, crop stabilization and window outputs. Accept explicit inputs from discovery or dataset planning. |
+
 Both `face_preprocess` and `prepare_dataset` accept independent pose and face
 thresholds:
 
