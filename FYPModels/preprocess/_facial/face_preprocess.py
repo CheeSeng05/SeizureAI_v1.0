@@ -29,15 +29,15 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     __package__ = "seizure_multimodal.facial_resnet"
 
-from ..progress import report_progress
-from ..reproducibility import build_preprocessing_record, save_run_record
-from ..video.io import iter_sampled_frames, open_video
-from ..preprocess import (
+from ...seizure_multimodal.progress import report_progress
+from ...seizure_multimodal.reproducibility import build_preprocessing_record, save_run_record
+from ...seizure_multimodal.video.io import iter_sampled_frames, open_video
+from .. import (
     SPEINetConfig, SPEINetEnhancer, add_video_enhancement_arguments,
     iter_enhanced_frames, video_enhancement_kwargs,
 )
-from .preprocess_diagnostics import frame_diagnostics, write_diagnostics
-from .preprocess_options import (
+from ..preprocess_diagnostics import frame_diagnostics, write_diagnostics
+from ..preprocess_options import (
     add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
 )
 

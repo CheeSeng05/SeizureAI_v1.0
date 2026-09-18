@@ -16,7 +16,7 @@ from typing import Sequence
 
 import numpy as np
 
-from ..checkpoints.provenance import sha256_file
+from ..seizure_multimodal.checkpoints.provenance import sha256_file
 
 
 DEFAULT_SPEINET_CHECKPOINT = (

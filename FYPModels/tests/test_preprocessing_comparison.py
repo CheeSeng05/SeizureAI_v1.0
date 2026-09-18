@@ -13,10 +13,10 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from seizure_multimodal.facial_resnet import face_preprocess as preprocessing
-from seizure_multimodal.facial_resnet.compare_preprocessing import build_experiments, comparison_row
-from seizure_multimodal.facial_resnet.preprocess_diagnostics import frame_diagnostics, summarize_frames
-from seizure_multimodal.facial_resnet.preprocess_options import (
+from FYPModels.preprocess._facial import face_preprocess as preprocessing
+from FYPModels.preprocess._facial.compare_preprocessing import build_experiments, comparison_row
+from FYPModels.preprocess.preprocess_diagnostics import frame_diagnostics, summarize_frames
+from FYPModels.preprocess.preprocess_options import (
     BASELINE_TUNING, add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
 )
 
@@ -140,7 +140,7 @@ class PreprocessingComparisonTest(unittest.TestCase):
         return result, options
 
     def test_video_enhancement_precedes_both_pose_and_face_detection(self):
-        from seizure_multimodal.preprocess import SPEINetConfig
+        from FYPModels.preprocess import SPEINetConfig
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             checkpoint = root / "speinet.pt"

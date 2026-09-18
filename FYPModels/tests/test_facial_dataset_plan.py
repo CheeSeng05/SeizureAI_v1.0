@@ -5,7 +5,7 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from seizure_multimodal.facial_resnet.prepare_dataset import (
+from FYPModels.preprocess.prepare_dataset import (
     stratified_video_plan,
     summarize_plan,
 )

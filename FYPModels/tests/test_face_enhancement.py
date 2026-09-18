@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from seizure_multimodal.facial_resnet import face_preprocess as preprocessing
+from FYPModels.preprocess._facial import face_preprocess as preprocessing
 from seizure_multimodal.video.io import VideoMetadata
 
 

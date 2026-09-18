@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from seizure_multimodal.preprocess import (
+from FYPModels.preprocess import (
     SPEINetConfig, SPEINetEnhancer, add_video_enhancement_arguments,
     iter_enhanced_frames, video_enhancement_kwargs,
 )

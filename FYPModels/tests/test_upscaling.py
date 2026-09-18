@@ -29,8 +29,8 @@ if not __package__:
 
 from seizure_multimodal.checkpoints.provenance import sha256_file
 from seizure_multimodal.video.io import open_video
-from seizure_multimodal.facial_resnet import face_preprocess as preprocessing
-from seizure_multimodal.facial_resnet.face_preprocess import (
+from FYPModels.preprocess._facial import face_preprocess as preprocessing
+from FYPModels.preprocess._facial.face_preprocess import (
     DEFAULT_SR_MODEL_DIR, SR_MODELS, _sr_model_path, _upscaling,
 )
 

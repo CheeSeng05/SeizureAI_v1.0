@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .face_preprocess import extract_video
-from .preprocess_options import BASELINE_TUNING, CONFIDENCE_OPTIONS, validate_tuning
+from ..preprocess_options import BASELINE_TUNING, CONFIDENCE_OPTIONS, validate_tuning
 
 
 def build_experiments(

@@ -7,9 +7,9 @@ import json
 import random
 from pathlib import Path
 
-from .face_preprocess import add_enhancement_arguments, enhancement_kwargs, extract_video
+from ._facial.face_preprocess import add_enhancement_arguments, enhancement_kwargs, extract_video
 from .preprocess_options import add_tuning_arguments, tuning_kwargs, validate_tuning
-from ..preprocess import add_video_enhancement_arguments, video_enhancement_kwargs
+from . import add_video_enhancement_arguments, video_enhancement_kwargs
 
 
 PLAN_FIELDS = (
