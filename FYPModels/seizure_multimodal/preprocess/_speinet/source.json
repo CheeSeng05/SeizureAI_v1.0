@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/yangt1013/SPEINet",
+  "revision": "3aaa3f1e761e8047f50e6fe235b9ea61389dfbf9",
+  "original_sha256": {
+    "model/speinet.py": "432d97448945f1a1e32e6b5db26232d05aed6f1ff7b8e64d24ee051d6fe0845d",
+    "model/swinir.py": "011d90bf39904d85e0d67dd8ab46d8c4e27d47d018f9de63d12ff45529c26ec6",
+    "model/recons_video_ori.py": "d05ff17eb8ed9edf8d539fbba38c90e7d61c48dc90ddd2d5f0f28b02edbb7c83",
+    "model/SearchTransfer.py": "614a1c190177259c9724a7926253e05a497150d7a40045eab53d47c394e6db0a",
+    "model/block.py": "aef1b324476f13e8bc029bdab8c05045cd61f653e4dc77c2190b9a46fc7d8a74",
+    "model/rcl.py": "a448cf9399c7400cc328a0970940ea50b0a582a7fed059c13a479e06bea0b889",
+    "inference_SPEINet.py": "b877b3497ce67316b84d27863e7d4a56585157dda8ecb7c00ddd10af519a1c68"
+  }
+}

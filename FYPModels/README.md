@@ -79,6 +79,148 @@ sampled frames during short detection failures. Use a new output directory, or
 remove the previous smoke-test output, before repeating the same sample because
 manifest rows are not intended to be duplicated.
 
+### Testing six image upscaling algorithms
+
+`_upscaling(image, model, scale=4, model_dir=...)` accepts a non-empty **uint8 BGR**
+image (as returned by `cv2.imread`). The algorithms are `bilinear`, `bicubic`,
+`edsr`, `espcn`, `fsrcnn`, and `lapsrn`. Neural models are cached for sequential
+calls; interpolation uses `cv2.resize` and needs no weights.
+
+`face_preprocess.py` owns the reusable upscaling functions.
+`tests/test_upscaling.py` owns the comparison workflow and automated tests.
+From `FYPModels`, with the facial Python environment active, compare all six on
+the same small face crop:
+
+```bash
+python -m tests.test_upscaling path/to/face_crop.png \
+  --output results/upscaling_x4 --scale 4 --download-models
+```
+
+`path/to/face_crop.png` is a placeholder: replace it with an existing image.
+If you only have the source video, use the video command below instead.
+
+The download flag fetches missing weights from the model authors into
+`checkpoints/pretrained/super_resolution` (roughly 40 MB total for x4). Later
+runs reuse the files, so the flag can be omitted. `--model-dir` overrides the
+location. The installed OpenCV must expose `cv2.dnn_superres`; it is included in
+the contrib distributions. Use one OpenCV distribution in an environment, rather
+than installing conflicting base/contrib or GUI/headless builds together.
+
+Alternatively, select a frame and normalized face ROI from a video:
+
+```bash
+python -m tests.test_upscaling \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  --video-time 0.6 --roi 0.23 0.13 0.33 0.31 \
+  --output results/upscaling_frame --scale 4 --download-models
+```
+
+This ROI selects the face of the seated person wearing the EEG cap at 0.6 seconds
+in this video; choose suitable coordinates for other recordings or timestamps.
+Video seeking uses the nearest frame index at the reported FPS. Begin
+with a small crop (for example, 64x64 pixels), since EDSR on a full video frame
+can be expensive. The runner preserves the supplied crop's resolution and does
+not silently shrink it before inference.
+
+Each run saves `input.png`, six full-resolution algorithm PNGs, a labeled
+`comparison.png`, `detail.png`, `timings.csv`, and `run.json` with input/model
+hashes and settings. The overview labels input/output pixel dimensions but
+shrinks previews to fit. `detail.png` compares the same central region at native
+output pixels, alongside an input reference enlarged with nearest-neighbor
+pixel replication. View it or the individual PNGs at **100% zoom**; fitting
+images to the same viewer size can hide enlargement. All six outputs deliberately
+have the same dimensions: x4 means four times the width and height (16 times
+the pixel count), not a guarantee of recovered detail or greater sharpness.
+Timings separate the first call (including model loading) from repeated warm
+calls (`--repeats`, default 3). Choose a new output directory for each run.
+
+Use the same scale for a meaningful comparison: the command supports x2 and x4,
+which all four neural models provide. The function also supports x3 for
+EDSR/ESPCN/FSRCNN and x8 for LapSRN, with matching checkpoint files.
+`setModel` requires the actual checkpoint's integer scale; see the
+[OpenCV super-resolution tutorial](https://docs.opencv.org/4.x/d5/d29/tutorial_dnn_superres_upscale_image_single.html).
+
+Run automated checks with `python -m unittest tests.test_upscaling -v`.
+The real-model test skips until all four x4 checkpoints are available. This
+comparison runs independently of the video extraction entry point and reports
+image outputs and speed. Assess landmark availability and landmark placement
+separately on the same frames before adopting an upscaler for face detection;
+visual sharpness alone does not establish an improvement. PSNR/SSIM require an
+aligned reference image and are not computed against the low-resolution input.
+
+### SPEINet video enhancement before facial preprocessing
+
+The requested model is integrated under `seizure_multimodal/preprocess`:
+
+```text
+Video -> preprocess.SPEINetEnhancer -> face_preprocess -> face windows
+```
+
+Add `--video-enhancement speinet --speinet-checkpoint path/to/model_best.pt` to
+`face_preprocess` or `prepare_dataset`. SPEINet receives full frames and native
+temporal neighbours before pose and face detection. Source dimensions, sampling
+timestamps and original-video provenance are preserved. Enhancement defaults off.
+
+See [the preprocess module guide](seizure_multimodal/preprocess/README.md) for
+setup, invocation and validation details. The cached checkpoint restored a full
+1920×1080 frame from the sample video. **Some other test inputs produced non-finite
+values inside the upstream model.** The adapter detects this failure and stops
+before passing invalid frames onward; broad dataset reliability is unverified.
+
+### Sharpening face crops during video preprocessing
+
+`enhance_face_crop()` in `facial_resnet/face_preprocess.py` reuses `_upscaling()`
+and optionally applies an unsharp mask (adds a scaled difference between the
+crop and its Gaussian-blurred copy). Enable it on the video extraction command:
+
+```bash
+python -m seizure_multimodal.facial_resnet.face_preprocess \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  --output results/facial_sharpened \
+  --patient-id S1 --label 1 --split unassigned \
+  --window-seconds 2 --stride-seconds 1 \
+  --upscale-model bicubic --upscale-scale 2 \
+  --sharpen-amount 0.5 --sharpen-sigma 1.0 \
+  --max-duration-seconds 10 --preview
+```
+
+Run from `FYPModels` with the facial Python environment active. The same
+enhancement flags work with `prepare_dataset`. Omit `--preview` when running
+without a display. The pose and face task model flags/defaults are unchanged.
+
+The pipeline crops from the original frame, enhances the head crop before
+Face Landmarker, and maps normalized landmarks back using the original crop
+dimensions. It also enhances each stabilized face crop before resizing the RGB
+input to `--face-size`. Optical flow uses the crop before these extra crop
+operations (including any upstream SPEINet restoration); the output remains
+`[4, face_size, face_size]` (RGB plus flow magnitude). Enhancement does not affect
+the full-frame pose detector.
+
+Omit `--upscale-model` for sharpening without enlargement. Set
+`--sharpen-amount 0` for upscaling alone. Both are disabled by default. Neural
+upscalers (`edsr`, `espcn`, `fsrcnn`, `lapsrn`) use the same cached checkpoints
+described above, with `--sr-model-dir` to select their directory. Settings and
+the selected neural checkpoint hash are recorded with each preprocessing run.
+
+To reference the code directly from another module:
+
+```python
+from seizure_multimodal.facial_resnet.face_preprocess import enhance_face_crop
+
+# face_bgr is a non-empty uint8 BGR crop from a decoded video frame.
+enhanced_bgr = enhance_face_crop(
+    face_bgr, upscale_model="bicubic", upscale_scale=2,
+    sharpen_amount=0.5, sharpen_sigma=1.0,
+)
+```
+
+Sharpening increases existing edge contrast and can amplify noise or halos.
+It does not recover missing detail. Compare the preview and landmark diagnostics
+on the same video before using the settings for training; the code does not
+assume that visually sharper crops improve detection accuracy.
+
+Run checks with `python -m unittest tests.test_face_enhancement -v`.
+
 ### Comparing MediaPipe preprocessing settings
 
 Facial preprocessing uses `video/io.py` for decoder lifetime and frame sampling.

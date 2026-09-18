@@ -7,8 +7,9 @@ import json
 import random
 from pathlib import Path
 
-from .face_preprocess import extract_video
+from .face_preprocess import add_enhancement_arguments, enhancement_kwargs, extract_video
 from .preprocess_options import add_tuning_arguments, tuning_kwargs, validate_tuning
+from ..preprocess import add_video_enhancement_arguments, video_enhancement_kwargs
 
 
 PLAN_FIELDS = (
@@ -192,6 +193,8 @@ def main() -> None:
     parser.add_argument("--head-margin", type=float, default=0.75)
     parser.add_argument("--max-head-jump", type=float, default=0.18)
     add_tuning_arguments(parser)
+    add_enhancement_arguments(parser)
+    add_video_enhancement_arguments(parser)
     parser.add_argument(
         "--roi-config",
         help="Optional JSON mapping patient IDs to normalized [x1,y1,x2,y2] regions.",
@@ -301,6 +304,8 @@ def main() -> None:
             head_margin=args.head_margin,
             max_head_jump=args.max_head_jump,
             **tuning_kwargs(args),
+            **enhancement_kwargs(args),
+            **video_enhancement_kwargs(args),
         )
         if result.windows_written == 0:
             print(f"WARNING: no complete windows written for {row['source_video']}")

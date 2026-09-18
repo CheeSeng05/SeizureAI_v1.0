@@ -80,7 +80,7 @@ class PreprocessingComparisonTest(unittest.TestCase):
 
     def _run_extraction(self, root: Path, diagnostics_only: bool, max_duration_seconds=None,
                         *, progress_config=None, fail_face_creation=False,
-                        fail_inference=False, resources=None):
+                        fail_inference=False, resources=None, video_enhancement=None):
         frame = np.zeros((20, 20, 3), dtype=np.uint8)
         frames = iter([frame.copy() for _ in range(7)])
         capture = SimpleNamespace(isOpened=lambda: True, get=lambda key: {1: 5.0, 3: 7, 4: 20, 5: 20}[key],
@@ -96,7 +96,9 @@ class PreprocessingComparisonTest(unittest.TestCase):
             detect_for_video=Mock(side_effect=RuntimeError("inference failed") if fail_inference else results),
             close=Mock(),
         )
-        face_api = SimpleNamespace(detect_for_video=lambda *args: object(), close=Mock())
+        face_api = SimpleNamespace(
+            detect_for_video=Mock(return_value=SimpleNamespace(face_landmarks=[])), close=Mock(),
+        )
         if resources is not None:
             resources.update(capture=capture, pose=pose_api, face=face_api)
         options = {}
@@ -133,8 +135,34 @@ class PreprocessingComparisonTest(unittest.TestCase):
                 diagnostics_only=diagnostics_only,
                 max_duration_seconds=max_duration_seconds,
                 progress_config=progress_config,
+                video_enhancement=video_enhancement,
             )
         return result, options
+
+    def test_video_enhancement_precedes_both_pose_and_face_detection(self):
+        from seizure_multimodal.preprocess import SPEINetConfig
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint = root / "speinet.pt"
+            checkpoint.touch()
+            config = SPEINetConfig(checkpoint=checkpoint)
+            enhancer = SimpleNamespace(
+                config=config, record={"model": "speinet", "checkpoint": str(checkpoint)},
+                is_sharp=Mock(return_value=False),
+                enhance=Mock(side_effect=lambda frames: np.full_like(frames[1], 123)),
+            )
+            resources = {}
+            with patch.object(preprocessing, "SPEINetEnhancer", return_value=enhancer):
+                result, _ = self._run_extraction(root, True, resources=resources, video_enhancement=config)
+            self.assertEqual(result.sampled_frames, 7)
+            for call in resources["pose"].detect_for_video.call_args_list:
+                self.assertTrue(np.all(call.args[0]["data"] == 123))
+            for call in resources["face"].detect_for_video.call_args_list:
+                self.assertTrue(np.all(call.args[0]["data"] == 123))
+            record = json.loads(Path(result.run_record_path).read_text())
+            self.assertEqual(record["settings"]["video_enhancement"]["model"], "speinet")
+            self.assertIn("speinet_checkpoint", record["inputs"])
+            self.assertEqual(record["inputs"]["video"]["path"], str((root / "input.mp4").resolve()))
 
     def test_extraction_forwards_thresholds_and_expires_reused_boxes(self):
         with tempfile.TemporaryDirectory() as temporary:

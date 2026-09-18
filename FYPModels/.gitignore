@@ -29,3 +29,6 @@ facial_resnet/preprocess_options.py
 checkpoints/fyp/**/*.pth
 checkpoints/fyp/**/*.pt
 checkpoints/fyp/**/*.h5
+checkpoints/pretrained/super_resolution/*.pb
+checkpoints/pretrained/speinet/*.pt
+checkpoints/pretrained/speinet/*.pth

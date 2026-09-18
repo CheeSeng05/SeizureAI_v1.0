@@ -18,6 +18,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+enhancement = [
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "timm>=0.9",
+  "PyWavelets>=1.4",
+  "ptwt>=0.1.9",
+  "opencv-python-headless>=4.8",
+]
 video = [
   "torch>=2.1",
   "torchvision>=0.16",
@@ -37,6 +45,8 @@ all = [
   "torch>=2.1",
   "torchvision>=0.16",
   "timm>=0.9",
+  "PyWavelets>=1.4",
+  "ptwt>=0.1.9",
   "opencv-python-headless>=4.8",
   "mediapipe==0.10.21",
   "tensorflow>=2.15",
@@ -44,3 +54,7 @@ all = [
 
 [tool.setuptools.packages.find]
 include = ["seizure_multimodal*"]
+
+[tool.setuptools.package-data]
+"seizure_multimodal.preprocess" = ["README.md"]
+"seizure_multimodal.preprocess._speinet" = ["*.json", "*.md", "LICENSE"]

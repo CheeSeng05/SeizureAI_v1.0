@@ -1,10 +1,14 @@
 """Convert raw videos to stabilized RGB + optical-flow face windows.
 
-Face crops are taken from the original decoded frame before resizing. Upscaling
+Face crops are taken from full-resolution frames before resizing. Upscaling
 standardizes the tensor shape; it is not treated as recovered image detail.
+Optional crop enhancement reuses the upscaling models and applies unsharp
+masking before face landmark detection and RGB tensor creation.
+SPEINet video enhancement, when enabled, runs on full frames before this pipeline.
 """
 from __future__ import annotations
 
+import cv2
 import argparse
 import csv
 import hashlib
@@ -14,6 +18,7 @@ import sys
 import time
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -27,6 +32,10 @@ if not __package__:
 from ..progress import report_progress
 from ..reproducibility import build_preprocessing_record, save_run_record
 from ..video.io import iter_sampled_frames, open_video
+from ..preprocess import (
+    SPEINetConfig, SPEINetEnhancer, add_video_enhancement_arguments,
+    iter_enhanced_frames, video_enhancement_kwargs,
+)
 from .preprocess_diagnostics import frame_diagnostics, write_diagnostics
 from .preprocess_options import (
     add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
@@ -70,6 +79,23 @@ MANIFEST_FIELDS = (
     "face_box_reused_fraction",
 )
 
+SR_MODELS = {
+    # OpenCV interpolation methods
+    "bilinear": cv2.INTER_LINEAR,
+    "bicubic": cv2.INTER_CUBIC,
+
+    # Supported deep-learning super-resolution models
+    "edsr": "EDSR_x4.pb",
+    "espcn": "ESPCN_x4.pb",
+    "fsrcnn": "FSRCNN_x4.pb",
+    "lapsrn": "LapSRN_x4.pb",
+}
+SR_SCALES = {
+    "edsr": (2, 3, 4), "espcn": (2, 3, 4),
+    "fsrcnn": (2, 3, 4), "lapsrn": (2, 4, 8),
+}
+DEFAULT_SR_MODEL_DIR = Path(__file__).resolve().parents[2] / "checkpoints/pretrained/super_resolution"
+
 @dataclass(frozen=True)
 class PreprocessSummary:
     source_video: str
@@ -102,6 +128,128 @@ def _write_rows(path: Path, rows: Iterable[dict[str, Any]], *, append: bool) -> 
         if not has_header:
             writer.writeheader()
         writer.writerows(rows)
+
+def _sr_model_path(model: str, scale: int, model_dir: str | Path) -> Path:
+    if scale not in SR_SCALES[model]:
+        raise ValueError(f"{model} supports scales {SR_SCALES[model]}, received {scale}")
+    prefix = SR_MODELS[model].split("_x", 1)[0]
+    return Path(model_dir).resolve() / f"{prefix}_x{scale}.pb"
+
+
+@lru_cache(maxsize=4)
+def _load_sr_model(model: str, scale: int, model_path: str) -> Any:
+    """Reuse loaded networks for sequential frame processing in this process."""
+    if not hasattr(cv2, "dnn_superres"):
+        raise RuntimeError(
+            "Neural upscaling requires an OpenCV contrib build with dnn_superres. "
+            "Install opencv-contrib-python or opencv-contrib-python-headless."
+        )
+    if not Path(model_path).is_file():
+        raise FileNotFoundError(
+            f"Super-resolution model not found: {model_path}. "
+            "Run python -m tests.test_upscaling with --download-models to fetch the weights."
+        )
+    sr = cv2.dnn_superres.DnnSuperResImpl_create()
+    sr.readModel(model_path)
+    sr.setModel(model, scale)
+    return sr
+
+
+def _upscaling(
+    image: np.ndarray, model: str, *, scale: int = 4,
+    model_dir: str | Path = DEFAULT_SR_MODEL_DIR,
+) -> np.ndarray:
+    """Upscale a uint8 BGR image by an integer factor (default: 4 for all six).
+
+    Interpolation needs no weights. Neural methods use the checkpoint matching
+    ``scale`` and cache up to four networks; do not share them across threads.
+    """
+    model = model.strip().lower()
+    if model not in SR_MODELS:
+        raise ValueError(f"Unknown upscaling model {model!r}; choose from {tuple(SR_MODELS)}")
+    if isinstance(scale, bool) or not isinstance(scale, (int, np.integer)) or scale < 2:
+        raise ValueError("scale must be an integer of at least 2")
+    scale = int(scale)
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3 or image.size == 0:
+        raise ValueError("image must be a non-empty BGR image with shape [H, W, 3]")
+    if image.dtype != np.uint8:
+        raise ValueError("image must have dtype uint8 (pixel values 0 to 255)")
+    if model in {"bilinear", "bicubic"}:
+        return cv2.resize(
+            image, (image.shape[1] * scale, image.shape[0] * scale),
+            interpolation=SR_MODELS[model],
+        )
+    model_path = _sr_model_path(model, scale, model_dir)
+    sr = _load_sr_model(model, scale, str(model_path))
+    return sr.upsample(np.ascontiguousarray(image))
+
+
+def _validate_enhancement(
+    *, upscale_model: str | None, upscale_scale: int,
+    sharpen_amount: float, sharpen_sigma: float,
+) -> None:
+    if upscale_model is not None and upscale_model not in SR_MODELS:
+        raise ValueError(f"Unknown upscaling model {upscale_model!r}; choose from {tuple(SR_MODELS)}")
+    if isinstance(upscale_scale, bool) or not isinstance(upscale_scale, (int, np.integer)) or upscale_scale < 2:
+        raise ValueError("upscale_scale must be an integer of at least 2")
+    if upscale_model in SR_SCALES and upscale_scale not in SR_SCALES[upscale_model]:
+        raise ValueError(f"{upscale_model} supports scales {SR_SCALES[upscale_model]}")
+    if not math.isfinite(sharpen_amount) or sharpen_amount < 0:
+        raise ValueError("sharpen_amount must be finite and nonnegative")
+    if not math.isfinite(sharpen_sigma) or sharpen_sigma <= 0:
+        raise ValueError("sharpen_sigma must be finite and positive")
+
+
+def enhance_face_crop(
+    image: np.ndarray, *, upscale_model: str | None = None,
+    upscale_scale: int = 4, sr_model_dir: str | Path = DEFAULT_SR_MODEL_DIR,
+    sharpen_amount: float = 0.0, sharpen_sigma: float = 1.0,
+) -> np.ndarray:
+    """Optionally upscale, then sharpen a uint8 BGR crop without modifying it.
+
+    Reuses ``_upscaling`` and its cached neural weights. Unsharp masking adds
+    ``amount * (image - GaussianBlur(image))`` to enhance existing edges; it
+    cannot recover missing detail. Sigma is measured in pixels after upscaling.
+    Defaults preserve the input pixels. Apply to a crop, before RGB conversion.
+    """
+    if upscale_model is not None:
+        upscale_model = upscale_model.strip().lower()
+    _validate_enhancement(
+        upscale_model=upscale_model, upscale_scale=upscale_scale,
+        sharpen_amount=sharpen_amount, sharpen_sigma=sharpen_sigma,
+    )
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3 or image.size == 0:
+        raise ValueError("image must be a non-empty BGR image with shape [H, W, 3]")
+    if image.dtype != np.uint8:
+        raise ValueError("image must have dtype uint8 (pixel values 0 to 255)")
+    result = image.copy() if upscale_model is None else _upscaling(
+        image, upscale_model, scale=upscale_scale, model_dir=sr_model_dir,
+    )
+    if sharpen_amount > 0:
+        pixels = result.astype(np.float32)
+        blurred = cv2.GaussianBlur(pixels, (0, 0), sigmaX=sharpen_sigma)
+        # Floating-point subtraction and clipping avoid uint8 wraparound.
+        sharpened = cv2.addWeighted(pixels, 1 + sharpen_amount, blurred, -sharpen_amount, 0)
+        result = np.clip(np.rint(sharpened), 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(result)
+
+
+def add_enhancement_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("Face crop enhancement (disabled by default)")
+    group.add_argument("--upscale-model", choices=tuple(SR_MODELS),
+                       help="Upscale head/face crops before landmark detection and RGB extraction.")
+    group.add_argument("--upscale-scale", type=int, default=4)
+    group.add_argument("--sr-model-dir", type=Path, default=DEFAULT_SR_MODEL_DIR)
+    group.add_argument("--sharpen-amount", type=float, default=0.0,
+                       help="Unsharp-mask strength; 0 disables sharpening (try 0.5).")
+    group.add_argument("--sharpen-sigma", type=float, default=1.0,
+                       help="Gaussian blur sigma in crop pixels after upscaling.")
+
+
+def enhancement_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    return {name: getattr(args, name) for name in (
+        "upscale_model", "upscale_scale", "sr_model_dir", "sharpen_amount", "sharpen_sigma",
+    )}
 
 
 def _normalized_pose(result: Any, pose_index: int = 0) -> tuple[np.ndarray, bool]:
@@ -387,6 +535,7 @@ def _crop_face_input(
     *,
     face_size: int,
     cv2: Any,
+    enhancement: Mapping[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Create one normalized ``[4,H,W]`` RGB + flow-magnitude tensor."""
     if box is None:
@@ -396,9 +545,14 @@ def _crop_face_input(
     if crop.size == 0:
         return np.zeros((4, face_size, face_size), dtype=np.float32), None
     interpolation = cv2.INTER_AREA if min(crop.shape[:2]) >= face_size else cv2.INTER_CUBIC
-    crop = cv2.resize(crop, (face_size, face_size), interpolation=interpolation)
-    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(crop, (face_size, face_size), interpolation=interpolation)
+    # Flow uses the incoming video frame before optional crop sharpening/upscaling.
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    if enhancement is not None:
+        enhanced = enhance_face_crop(crop, **enhancement)
+        interpolation = cv2.INTER_AREA if min(enhanced.shape[:2]) >= face_size else cv2.INTER_CUBIC
+        resized = cv2.resize(enhanced, (face_size, face_size), interpolation=interpolation)
+    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     magnitude = np.zeros((face_size, face_size), dtype=np.float32)
     if previous_gray is not None:
         flow = cv2.calcOpticalFlowFarneback(
@@ -497,6 +651,11 @@ def extract_video(
     append_manifest: bool = False,
     face_size: int = 224,
     face_margin: float = 0.25,
+    upscale_model: str | None = None,
+    upscale_scale: int = 4,
+    sr_model_dir: str | Path = DEFAULT_SR_MODEL_DIR,
+    sharpen_amount: float = 0.0,
+    sharpen_sigma: float = 1.0,
     box_smoothing: float = 0.7,
     max_box_reuse_frames: int = 15,
     max_box_reuse_seconds: float | None = None,
@@ -515,13 +674,32 @@ def extract_video(
     diagnostics_only: bool = False,
     max_duration_seconds: float | None = None,
     progress_config: Mapping[str, Any] | None = None,
+    video_enhancement: SPEINetConfig | None = None,
 ) -> PreprocessSummary:
     """Extract model-ready face crops and landmarks; discard partial windows.
 
     The caller supplies discovered source/identity information. Optional progress
     uses the shared ``testing.progress_file`` configuration. Each successful run
     records input hashes, source metadata, settings and software versions.
+    Enhancement is opt-in; face boxes remain in original-frame coordinates.
+    ``video_enhancement`` restores full frames before pose/face detection, RGB
+    crops and optical flow. The manifest continues to identify the source video.
     """
+    if upscale_model is not None:
+        upscale_model = upscale_model.strip().lower()
+    enhancement = dict(
+        upscale_model=upscale_model, upscale_scale=upscale_scale,
+        sharpen_amount=sharpen_amount, sharpen_sigma=sharpen_sigma,
+    )
+    _validate_enhancement(**enhancement)
+    enhancement["upscale_scale"] = int(upscale_scale)
+    enhancement["sr_model_dir"] = str(Path(sr_model_dir).resolve())
+    crop_enhancement = enhancement if upscale_model is not None or sharpen_amount > 0 else None
+    sr_path = None
+    if upscale_model in SR_SCALES:
+        sr_path = _sr_model_path(upscale_model, upscale_scale, sr_model_dir)
+        # Fail before decoding if the requested checkpoint/build is unavailable.
+        _load_sr_model(upscale_model, int(upscale_scale), str(sr_path))
     pose_model_path = Path(pose_model_path).resolve()
     face_model_path = Path(face_model_path).resolve()
 
@@ -590,6 +768,8 @@ def extract_video(
     source = Path(video_path).resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Video not found: {source}")
+
+    video_enhancer = SPEINetEnhancer(video_enhancement) if video_enhancement is not None else None
     
     destination = Path(output).resolve()
     pose_dir, face_dir = destination / "pose", destination / "face"
@@ -648,7 +828,8 @@ def extract_video(
         capture, metadata = resources.enter_context(open_video(source, cv2=cv2))
         source_fps = metadata.fps
         settings = {
-            **tuning, "source_video": str(source), "pose_model_path": str(pose_model_path),
+            **tuning, **enhancement,
+            "source_video": str(source), "pose_model_path": str(pose_model_path),
             "face_model_path": str(face_model_path), "fps": fps, "source_fps": source_fps,
             "window_seconds": window_seconds, "stride_seconds": stride_seconds,
             "face_size": face_size, "face_margin": face_margin, "patient_roi": patient_roi,
@@ -661,10 +842,14 @@ def extract_video(
             "split_policy": "explicit" if split else "patient_sha256_70_15_15",
             "append_manifest": append_manifest, "preview": preview,
             "preview_delay_ms": preview_delay_ms,
+            "video_enhancement": video_enhancer.record if video_enhancer is not None else None,
         }
         run_record = build_preprocessing_record(
             pipeline="facial_resnet", sample_id=sample_id,
-            inputs={"video": source, "pose_model": pose_model_path, "face_model": face_model_path},
+            inputs={"video": source, "pose_model": pose_model_path, "face_model": face_model_path,
+                    **({"super_resolution_model": sr_path} if sr_path is not None else {}),
+                    **({"speinet_checkpoint": video_enhancer.record["checkpoint"]}
+                       if video_enhancer is not None else {})},
             settings=settings, source_metadata=metadata.as_dict(),
             software_versions={
                 "python": sys.version.split()[0], "numpy": np.__version__,
@@ -696,10 +881,13 @@ def extract_video(
         tracked_head_center: tuple[float, float] | None = None
         last_detected_box_sec: float | None = None
 
-        for time_sec, bgr in iter_sampled_frames(
-            capture, source_fps=source_fps, fps=fps,
-            max_duration_seconds=max_duration_seconds,
-        ):
+        frame_options = dict(source_fps=source_fps, fps=fps, max_duration_seconds=max_duration_seconds)
+        # Full-frame video restoration precedes all pose/face preprocessing.
+        frame_stream = (
+            iter_enhanced_frames(capture, enhancer=video_enhancer, **frame_options)
+            if video_enhancer is not None else iter_sampled_frames(capture, **frame_options)
+        )
+        for time_sec, bgr in frame_stream:
 
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             rgb = np.ascontiguousarray(rgb)
@@ -743,9 +931,15 @@ def extract_video(
             if head_box is not None:
                 head_rgb, actual_head_box = _crop_box(rgb, head_box)
                 if head_rgb.size:
+                    face_rgb = head_rgb
+                    if crop_enhancement is not None:
+                        head_bgr, _ = _crop_box(bgr, actual_head_box)
+                        face_rgb = cv2.cvtColor(
+                            enhance_face_crop(head_bgr, **crop_enhancement), cv2.COLOR_BGR2RGB,
+                        )
                     head_image = mp.Image(
                         image_format=mp.ImageFormat.SRGB,
-                        data=np.ascontiguousarray(head_rgb),
+                        data=np.ascontiguousarray(face_rgb),
                     )
                     face_result = face_api.detect_for_video(head_image, timestamp_ms)
 
@@ -788,6 +982,7 @@ def extract_video(
                     geometry, has_face = _face_geometry(face_result)
                     local_box = _face_box(
                         face_result,
+                        # Landmarks are normalized: map to the original crop dimensions.
                         head_rgb.shape[1],
                         head_rgb.shape[0],
                         face_margin,
@@ -818,6 +1013,7 @@ def extract_video(
             face_input, current_gray = _crop_face_input(
                 bgr, smoothed_box, previous_face_gray,
                 face_size=face_size, cv2=cv2,
+                enhancement=crop_enhancement,
             )
             if preview_active:
                 preview_active = _show_preprocessing_preview(
@@ -926,6 +1122,8 @@ def main() -> None:
     parser.add_argument("--face-margin", type=float, default=.25)
 
     add_tuning_arguments(parser)
+    add_enhancement_arguments(parser)
+    add_video_enhancement_arguments(parser)
     parser.add_argument("--diagnostics-only", action="store_true",
                         help="Save frame diagnostics and metrics without training window arrays.")
     parser.add_argument("--max-duration-seconds", type=float,
@@ -990,6 +1188,8 @@ def main() -> None:
             split_seed=args.split_seed,
             append_manifest=args.append_manifest,
             face_size=args.face_size, face_margin=args.face_margin,
+            **enhancement_kwargs(args),
+            **video_enhancement_kwargs(args),
             **tuning_kwargs(args),
             patient_roi=patient_roi,
             max_poses=args.max_poses,

@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/yangt1013/SPEINet",
+  "upstream_weights_url": "https://drive.google.com/file/d/1EAg7d2cn-5YseMrQZiFLgnUh8uSFitST/view",
+  "upstream_filename": "speinet_model_best",
+  "local_source": "Existing cached download /private/tmp/seizure-speinet-checkpoint-download",
+  "sha256": "2c762f9f0e0ec3c2ac995e7f5ae872a64d80747074708ee724821d31ed5da0bd",
+  "size_bytes": 128419101
+}

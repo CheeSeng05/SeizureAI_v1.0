@@ -1,0 +1,26 @@
+{
+  "source": "LD_detector/pickle/LogisticRegression_0.5_11.pkl",
+  "source_sha256": "f1ebc2353f5a171cc8c896f9b1978ef6dd9d8b4e47429cffc02d20874c369291",
+  "features": [
+    "lap",
+    "mis3",
+    "wave1",
+    "gra_7",
+    "sta_3",
+    "dct_3"
+  ],
+  "kernel_size": 11,
+  "classes": [
+    0,
+    1
+  ],
+  "coef": [
+    -0.11971818612047416,
+    -1.2293425023576632,
+    0.0044214112366378735,
+    -0.042858891031731176,
+    0.12867998448379486,
+    1.5577974574202265
+  ],
+  "intercept": -1.5940041517368388
+}
