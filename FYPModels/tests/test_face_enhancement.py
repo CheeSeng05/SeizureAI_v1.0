@@ -134,6 +134,9 @@ class FaceEnhancementTest(unittest.TestCase):
             FaceLandmarker=SimpleNamespace(create_from_options=lambda options: face_api),
         )
         mediapipe = SimpleNamespace(tasks=SimpleNamespace(vision=vision, BaseOptions=SimpleNamespace),
+                                    solutions=SimpleNamespace(face_detection=SimpleNamespace(
+                                        FaceDetection=Mock(return_value=SimpleNamespace(
+                                            process=Mock(return_value=SimpleNamespace(detections=[])), close=Mock())))),
                                     Image=lambda **kwargs: kwargs, ImageFormat=SimpleNamespace(SRGB=1))
         capture = SimpleNamespace(read=Mock(side_effect=[(True, self.image), (False, None)]))
         with tempfile.TemporaryDirectory() as temporary:

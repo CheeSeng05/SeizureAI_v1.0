@@ -14,7 +14,7 @@ FLAG_FIELDS = (
     "pose_head_fallback", "box_reused",
 )
 FRAME_FIELDS = (
-    "time_sec", *FLAG_FIELDS,
+    "time_sec", *FLAG_FIELDS, "face_detector_detected",
     "raw_x1", "raw_y1", "raw_x2", "raw_y2",
     "crop_x1", "crop_y1", "crop_x2", "crop_y2",
     "box_center_step_fraction", "box_center_offset_fraction",
@@ -23,10 +23,11 @@ FRAME_FIELDS = (
 
 def frame_diagnostics(*, time_sec: float, raw_box: Any, crop_box: Any,
                       previous_box: Any, frame_shape: tuple[int, ...],
-                      flags: tuple[bool, ...]) -> dict[str, Any]:
+                      flags: tuple[bool, ...], face_detector_detected: bool = False) -> dict[str, Any]:
     row = dict.fromkeys(FRAME_FIELDS, None)
     row["time_sec"] = time_sec
     row.update(zip(FLAG_FIELDS, map(int, flags)))
+    row["face_detector_detected"] = int(face_detector_detected)
     for prefix, box in (("raw", raw_box), ("crop", crop_box)):
         if box is not None:
             row.update({f"{prefix}_{name}": float(value)
@@ -53,6 +54,7 @@ def summarize_frames(rows: list[dict[str, Any]], processing_seconds: float) -> d
         "processing_fps": len(rows) / processing_seconds if processing_seconds > 0 else None,
         "pose_detection_fraction": mean("pose_detected"),
         "face_landmark_fraction": mean("face_landmarks_detected"),
+        "face_detector_fraction": mean("face_detector_detected"),
         "face_region_fraction": mean("face_region_available"),
         "pose_head_fallback_fraction": mean("pose_head_fallback"),
         "face_box_reused_fraction": mean("box_reused"),

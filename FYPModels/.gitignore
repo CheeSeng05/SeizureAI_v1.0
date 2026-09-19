@@ -32,3 +32,4 @@ checkpoints/fyp/**/*.h5
 checkpoints/pretrained/super_resolution/*.pb
 checkpoints/pretrained/speinet/*.pt
 checkpoints/pretrained/speinet/*.pth
+checkpoints/pretrained/yunet/*.onnx

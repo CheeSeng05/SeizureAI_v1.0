@@ -99,8 +99,9 @@ class PreprocessingComparisonTest(unittest.TestCase):
         face_api = SimpleNamespace(
             detect_for_video=Mock(return_value=SimpleNamespace(face_landmarks=[])), close=Mock(),
         )
+        detector = SimpleNamespace(process=Mock(return_value=SimpleNamespace(detections=[])), close=Mock())
         if resources is not None:
-            resources.update(capture=capture, pose=pose_api, face=face_api)
+            resources.update(capture=capture, pose=pose_api, face=face_api, detector=detector)
         options = {}
 
         def create(kind, value):
@@ -116,6 +117,8 @@ class PreprocessingComparisonTest(unittest.TestCase):
             FaceLandmarker=SimpleNamespace(create_from_options=lambda value: create("face", value)),
         )
         mediapipe = SimpleNamespace(tasks=SimpleNamespace(vision=vision, BaseOptions=SimpleNamespace),
+                                    solutions=SimpleNamespace(face_detection=SimpleNamespace(
+                                        FaceDetection=Mock(return_value=detector))),
                                     Image=lambda **kwargs: kwargs, ImageFormat=SimpleNamespace(SRGB=1))
         video = root / "input.mp4"
         model = root / "model.task"
@@ -159,6 +162,8 @@ class PreprocessingComparisonTest(unittest.TestCase):
                 self.assertTrue(np.all(call.args[0]["data"] == 123))
             for call in resources["face"].detect_for_video.call_args_list:
                 self.assertTrue(np.all(call.args[0]["data"] == 123))
+            for call in resources["detector"].process.call_args_list:
+                self.assertTrue(np.all(call.args[0] == 123))
             record = json.loads(Path(result.run_record_path).read_text())
             self.assertEqual(record["settings"]["video_enhancement"]["model"], "speinet")
             self.assertIn("speinet_checkpoint", record["inputs"])
@@ -248,6 +253,7 @@ class PreprocessingComparisonTest(unittest.TestCase):
                 )
             resources["pose"].close.assert_called_once_with()
             resources["face"].close.assert_called_once_with()
+            resources["detector"].close.assert_called_once_with()
             resources["capture"].release.assert_called_once_with()
             self.assertEqual(json.loads(progress.read_text())["percent"], 0)
             self.assertFalse(list(root.rglob("runs/*.json")))

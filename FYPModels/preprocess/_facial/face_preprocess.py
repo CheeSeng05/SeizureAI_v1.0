@@ -5,6 +5,8 @@ standardizes the tensor shape; it is not treated as recovered image detail.
 Optional crop enhancement reuses the upscaling models and applies unsharp
 masking before face landmark detection and RGB tensor creation.
 SPEINet video enhancement, when enabled, runs on full frames before this pipeline.
+MediaPipe Face Detection selects a patient face before landmark extraction;
+pose-derived head crops remain available when the face detector misses.
 """
 from __future__ import annotations
 
@@ -26,8 +28,8 @@ import numpy as np
 
 if not __package__:
     # Preserve the original standalone `python face_preprocess.py` entry point.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    __package__ = "seizure_multimodal.facial_resnet"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    __package__ = "FYPModels.preprocess._facial"
 
 from ...seizure_multimodal.progress import report_progress
 from ...seizure_multimodal.reproducibility import build_preprocessing_record, save_run_record
@@ -417,6 +419,58 @@ def _crop_box(image: np.ndarray, box: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return image[y1:y2, x1:x2], actual
 
 
+@dataclass(frozen=True)
+class _DetectedFace:
+    box: np.ndarray
+    center: tuple[float, float]
+    detection: Any
+
+
+def _select_face_detection(
+    result: Any,
+    frame_width: int,
+    frame_height: int,
+    patient_roi: tuple[float, float, float, float],
+    previous_head_center: tuple[float, float] | None = None,
+    max_head_jump: float = 0.18,
+    margin: float = 0.25,
+) -> _DetectedFace | None:
+    """Choose one face inside the patient ROI and convert its box to pixels.
+
+    The highest-confidence face starts a track. Subsequent frames prefer the
+    nearest face and reject jumps to other people. Padding produces a square,
+    frame-clipped crop suitable for the existing landmark and RGB/flow stages.
+    """
+    x1, y1, x2, y2 = patient_roi
+    candidates = []
+    for index, detection in enumerate(result.detections or []):
+        rect = detection.location_data.relative_bounding_box
+        if not np.isfinite([rect.xmin, rect.ymin, rect.width, rect.height]).all():
+            continue
+        if rect.width <= 0 or rect.height <= 0:
+            continue
+        # Boxes can extend beyond the image; reject those entirely outside it.
+        if (rect.xmin >= 1 or rect.ymin >= 1
+                or rect.xmin + rect.width <= 0 or rect.ymin + rect.height <= 0):
+            continue
+        center = (rect.xmin + rect.width / 2, rect.ymin + rect.height / 2)
+        if not (x1 <= center[0] <= x2 and y1 <= center[1] <= y2):
+            continue
+        distance = 0.0 if previous_head_center is None else float(
+            np.hypot(center[0] - previous_head_center[0], center[1] - previous_head_center[1])
+        )
+        if previous_head_center is not None and distance > max_head_jump:
+            continue
+        score = float(detection.score[0]) if len(detection.score) else 0.0
+        if not math.isfinite(score):
+            continue
+        side = max(rect.width * frame_width, rect.height * frame_height) * (1 + 2 * margin)
+        box = _square_box(center[0] * frame_width, center[1] * frame_height,
+                          side, frame_width, frame_height)
+        candidates.append((distance, -score, index, _DetectedFace(box, center, detection)))
+    return min(candidates, key=lambda item: item[:3])[3] if candidates else None
+
+
 def _translate_box(local_box: np.ndarray, parent_box: np.ndarray) -> np.ndarray:
     translated = local_box.copy()
     translated[[0, 2]] += parent_box[0]
@@ -578,11 +632,19 @@ def _show_preprocessing_preview(
     box_reused: bool,
     delay_ms: int,
     cv2: Any,
+    face_detection: Any | None = None,
+    draw_detection: Any | None = None,
 ) -> bool:
-    """Display the selected region and exact RGB tensor crop; return False on q."""
+    """Display the selected face and exact RGB tensor crop; return False on q."""
     source = frame_bgr.copy()
-    color = (0, 200, 0) if face_landmarks_found else (0, 165, 255)
-    status = "FACE DETECTED" if face_landmarks_found else "NO FACE"
+    color = (0, 200, 0) if face_landmarks_found or face_detection is not None else (0, 165, 255)
+    status = "POSE HEAD FALLBACK" if box is not None else "NO FACE"
+    if face_detection is not None:
+        status = "FACE BOX (NO LANDMARKS)"
+        if draw_detection is not None:
+            draw_detection(source, face_detection)
+    if face_landmarks_found:
+        status = "FACE LANDMARKS"
     if box_reused:
         status = "REUSED PREVIOUS BOX"
     if box is not None:
@@ -591,7 +653,7 @@ def _show_preprocessing_preview(
 
     cv2.putText(
         source,
-        f"{time_sec:.2f}s | {status} | q: close preview",
+        f"{time_sec:.2f}s | {status} | q: stop",
         (20, 40),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.9,
@@ -665,6 +727,7 @@ def extract_video(
     min_face_detection_confidence: float = 0.5,
     min_face_presence_confidence: float = 0.5,
     min_face_tracking_confidence: float = 0.5,
+    face_detection_model_selection: int = 1,
     patient_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0),
     max_poses: int = 4,
     head_margin: float = 0.75,
@@ -684,6 +747,8 @@ def extract_video(
     Enhancement is opt-in; face boxes remain in original-frame coordinates.
     ``video_enhancement`` restores full frames before pose/face detection, RGB
     crops and optical flow. The manifest continues to identify the source video.
+    Face Detection runs on RGB frames with the selected short/full-range model.
+    Its boxes can supply crops even if pose or face landmarks are unavailable.
     """
     if upscale_model is not None:
         upscale_model = upscale_model.strip().lower()
@@ -736,6 +801,8 @@ def extract_video(
         max_box_reuse_seconds=max_box_reuse_seconds,
     )
     validate_tuning(tuning)
+    if type(face_detection_model_selection) is not int or face_detection_model_selection not in (0, 1):
+        raise ValueError("face_detection_model_selection must be 0 (short range) or 1 (full range)")
     if max_duration_seconds is not None and (
         not math.isfinite(max_duration_seconds) or max_duration_seconds <= 0
     ):
@@ -764,6 +831,8 @@ def extract_video(
         import mediapipe as mp
     except ImportError as exc:
         raise RuntimeError("Video preprocessing requires opencv-python-headless and mediapipe") from exc
+    if not hasattr(mp, "solutions") or not hasattr(mp.solutions, "face_detection"):
+        raise RuntimeError("Face Detection requires the project's pinned mediapipe==0.10.21 with mp.solutions.")
 
     source = Path(video_path).resolve()
     if not source.is_file():
@@ -786,6 +855,7 @@ def extract_video(
 
     pose_hits: list[bool] = []
     face_hits: list[bool] = []
+    face_detection_hits: list[bool] = []
     face_region_hits: list[bool] = []
     pose_head_fallbacks: list[bool] = []
 
@@ -842,6 +912,8 @@ def extract_video(
             "split_policy": "explicit" if split else "patient_sha256_70_15_15",
             "append_manifest": append_manifest, "preview": preview,
             "preview_delay_ms": preview_delay_ms,
+            "face_detector": "mediapipe.solutions.face_detection",
+            "face_detection_model_selection": face_detection_model_selection,
             "video_enhancement": video_enhancer.record if video_enhancer is not None else None,
         }
         run_record = build_preprocessing_record(
@@ -861,6 +933,11 @@ def extract_video(
         resources.callback(pose_api.close)
         face_api = FaceLandmarker.create_from_options(face_options)
         resources.callback(face_api.close)
+        face_detector = mp.solutions.face_detection.FaceDetection(
+            model_selection=face_detection_model_selection,
+            min_detection_confidence=min_face_detection_confidence,
+        )
+        resources.callback(face_detector.close)
         if preview:
             resources.callback(cv2.destroyAllWindows)
 
@@ -877,7 +954,6 @@ def extract_video(
         smoothed_box: np.ndarray | None = None
         previous_face_gray: np.ndarray | None = None
         missed_face_frames = 0
-        preview_active = preview
         tracked_head_center: tuple[float, float] | None = None
         last_detected_box_sec: float | None = None
 
@@ -899,6 +975,13 @@ def extract_video(
 
             timestamp_ms = int(round(time_sec * 1000))
 
+            selected_face = _select_face_detection(
+                face_detector.process(rgb), bgr.shape[1], bgr.shape[0], patient_roi,
+                tracked_head_center, max_head_jump, face_margin,
+            )
+            if selected_face is not None:
+                tracked_head_center = selected_face.center
+
             pose_result = pose_api.detect_for_video(
                 media_image,
                 timestamp_ms,
@@ -911,7 +994,7 @@ def extract_video(
                 max_head_jump,
             )
             current_head_center = _pose_head_center(pose_result, pose_index)
-            if current_head_center is not None:
+            if selected_face is None and current_head_center is not None:
                 tracked_head_center = current_head_center
             pose, has_pose = _normalized_pose(
                 pose_result, pose_index if pose_index is not None else -1
@@ -925,11 +1008,12 @@ def extract_video(
             )
 
             face_result = None
-            detected_box = None
+            detected_box = selected_face.box if selected_face is not None else None
+            landmark_crop_box = detected_box if detected_box is not None else head_box
             has_face = False
             geometry = np.zeros(len(FACE_LANDMARK_PAIRS) * 2, np.float32)
-            if head_box is not None:
-                head_rgb, actual_head_box = _crop_box(rgb, head_box)
+            if landmark_crop_box is not None:
+                head_rgb, actual_head_box = _crop_box(rgb, landmark_crop_box)
                 if head_rgb.size:
                     face_rgb = head_rgb
                     if crop_enhancement is not None:
@@ -978,7 +1062,8 @@ def extract_video(
                             matrix = face_result.facial_transformation_matrixes[0]
                             print("Transformation matrix:", matrix)
                     else:
-                        print("No face detected")
+                        fallback = "detected face box" if selected_face is not None else "pose head box"
+                        print(f"[{time_sec:.2f}s] No face landmarks; using {fallback}")
                     geometry, has_face = _face_geometry(face_result)
                     local_box = _face_box(
                         face_result,
@@ -992,7 +1077,7 @@ def extract_video(
                 if detected_box is None:
                     detected_box = head_box
 
-            used_pose_fallback = detected_box is not None and not has_face
+            used_pose_fallback = detected_box is not None and selected_face is None and not has_face
 
             reused = False
             previous_box = smoothed_box
@@ -1015,8 +1100,9 @@ def extract_video(
                 face_size=face_size, cv2=cv2,
                 enhancement=crop_enhancement,
             )
-            if preview_active:
-                preview_active = _show_preprocessing_preview(
+            stop_requested = False
+            if preview:
+                stop_requested = not _show_preprocessing_preview(
                     bgr,
                     face_input,
                     smoothed_box,
@@ -1025,16 +1111,20 @@ def extract_video(
                     box_reused=reused,
                     delay_ms=preview_delay_ms,
                     cv2=cv2,
+                    face_detection=selected_face.detection if selected_face is not None else None,
+                    draw_detection=mp.solutions.drawing_utils.draw_detection,
                 )
             previous_face_gray = current_gray
             diagnostic_rows.append(frame_diagnostics(
                 time_sec=time_sec, raw_box=detected_box, crop_box=smoothed_box,
                 previous_box=previous_box, frame_shape=bgr.shape,
                 flags=(has_pose, has_face, smoothed_box is not None, used_pose_fallback, reused),
+                face_detector_detected=selected_face is not None,
             ))
             if not diagnostics_only:
                 poses.append(pose); faces.append(face_input); face_geometries.append(geometry)
             pose_hits.append(has_pose); face_hits.append(has_face)
+            face_detection_hits.append(selected_face is not None or has_face)
             face_region_hits.append(smoothed_box is not None)
             pose_head_fallbacks.append(used_pose_fallback)
             face_box_reused.append(reused); times.append(time_sec)
@@ -1046,6 +1136,8 @@ def extract_video(
                     elapsed_sec=now - processing_start,
                 )
                 last_progress_time = now
+            if stop_requested:
+                break
 
     processing_seconds = time.perf_counter() - processing_start
     diagnostics_path = write_diagnostics(
@@ -1079,7 +1171,7 @@ def extract_video(
                 "face_geometry_path": str(geometry_path.relative_to(destination)),
                 "face_size": face_size,
                 "pose_detection_fraction": f"{np.mean(pose_hits[start:stop]):.6f}",
-                "face_detection_fraction": f"{np.mean(face_hits[start:stop]):.6f}",
+                "face_detection_fraction": f"{np.mean(face_detection_hits[start:stop]):.6f}",
                 "face_region_fraction": f"{np.mean(face_region_hits[start:stop]):.6f}",
                 "face_landmark_fraction": f"{np.mean(face_hits[start:stop]):.6f}",
                 "pose_head_fallback_fraction": f"{np.mean(pose_head_fallbacks[start:stop]):.6f}",
@@ -1120,6 +1212,8 @@ def main() -> None:
 
     parser.add_argument("--face-size", type=int, default=224)
     parser.add_argument("--face-margin", type=float, default=.25)
+    parser.add_argument("--face-detection-model-selection", type=int, choices=(0, 1), default=1,
+                        help="MediaPipe Face Detection model: 0 short range, 1 full range (default).")
 
     add_tuning_arguments(parser)
     add_enhancement_arguments(parser)
@@ -1168,7 +1262,7 @@ def main() -> None:
         "--preview-delay-ms",
         type=int,
         default=30,
-        help="Delay between sampled preview frames; press q or Escape to close it.",
+        help="Delay between sampled preview frames; q or Escape stops processing and saves complete windows.",
     )
 
     args = parser.parse_args()
@@ -1188,6 +1282,7 @@ def main() -> None:
             split_seed=args.split_seed,
             append_manifest=args.append_manifest,
             face_size=args.face_size, face_margin=args.face_margin,
+            face_detection_model_selection=args.face_detection_model_selection,
             **enhancement_kwargs(args),
             **video_enhancement_kwargs(args),
             **tuning_kwargs(args),

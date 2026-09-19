@@ -20,7 +20,7 @@ from ..seizure_multimodal.checkpoints.provenance import sha256_file
 
 
 DEFAULT_SPEINET_CHECKPOINT = (
-    Path(__file__).resolve().parents[2] / "checkpoints/pretrained/speinet/model_best.pt"
+    Path(__file__).resolve().parents[1] / "checkpoints/pretrained/speinet/model_best.pt"
 )
 _SOURCE_DIR = Path(__file__).parent / "_speinet"
 
