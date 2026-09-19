@@ -15,6 +15,7 @@ import numpy as np
 from ..data_inspection import inspect_mp4, resolved_interval_label_records, resolved_label_records
 from .vsvig_adapter import VSViGAdapter
 from ..progress import report_progress
+from .pose_export import PoseExport
 
 
 PATCH_POINT_ORDER = (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17)
@@ -504,6 +505,7 @@ def predict_video_file(
     pose_batch_size: int = 16,
     pose_input_height: int = 256,
     progress_config: dict[str, Any] | None = None,
+    pose_output_path: str | Path | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray, dict[str, Any]]:
     if clip_frames != 30:
         raise ValueError("The pretrained VSViG checkpoint requires exactly 30 frames per clip")
@@ -541,6 +543,7 @@ def predict_video_file(
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise IOError(f"Video cannot be opened: {video_path}")
+    pose_export = PoseExport(pose_output_path, metadata)
     try:
         with VSViGAdapter(
             source_path=vsvig_source,
@@ -574,6 +577,8 @@ def predict_video_file(
                         pose.predict_many(frames[pose_start : pose_start + pose_batch_size])
                     )
                 raw_keypoints = [result[0] for result in pose_results]
+                for offset, points in enumerate(raw_keypoints):
+                    pose_export.add(clip_start + offset, points)
                 pose_hits = sum(int(result[1]) for result in pose_results)
                 pending.append(
                     (
@@ -627,6 +632,7 @@ def predict_video_file(
             inference_only = adapter.is_inference_only and pose.is_inference_only
     finally:
         capture.release()
+        pose_export.close()
     run_metadata = {
         "video": metadata.as_dict(),
         "annotation": annotation.__dict__,

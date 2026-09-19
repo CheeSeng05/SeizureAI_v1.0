@@ -329,7 +329,49 @@ For a fair CPU/CUDA benchmark, run the same stored recording in each mode with
 the same checkpoint and configuration. Existing historical runs created before
 runtime tracking show an unavailable duration.
 
-## Development and tests
+## Skeleton overlay and archived items
+
+New video runs save `video_only/pose_keypoints.json`. On a run result, enable
+**Show skeleton** above the playback caption. It follows playback and seeking,
+and **Fullscreen with overlay** keeps the skeleton visible in fullscreen.
+Green/yellow/pink indicate stronger/weaker OpenPose confidence. These
+colours are not seizure probability or model explanations. Undetected joints
+and unprocessed trailing frames are hidden. OpenPose currently selects the
+largest detected person per frame; it can track the wrong person when others
+enter the scene. Old runs need to be rerun to produce pose data. Labels are
+optional, and CPU and CUDA use the same overlay format.
+
+Use **Archive** on Recordings or Model runs to hide an item. Archiving a
+recording also hides its runs. In **Settings → Archived items**, restore the
+recording to show those runs again; individually archived runs stay archived.
+Archived recordings cannot receive uploads or start new runs until restored.
+
+Permanent deletion is only available for archived items in Settings. The
+confirmation shows file count, recorded file size, and affected run count;
+type the exact ID to confirm. Deleting a run removes its results and working
+copies but keeps its source recording. Deleting a recording also removes its
+managed video, EEG, labels, runs, annotations, windows and results. Original
+files selected from your computer are untouched. Dataset/patient catalog rows
+are retained. Active processing prevents archive/delete operations.
+
+If cleanup fails, the item stays archived and marked as deletion started.
+Use **Retry deletion** after fixing the storage problem. Restoration is blocked
+once deletion begins because some objects may already have been removed.
+The supported Docker deployment uses one app worker to coordinate processing
+and data changes; do not run parallel CLI ingestion/deletion during cleanup.
+
+From `fyp_data_platform`, apply this update using the usual CPU command
+`docker compose up --build`, or the NVIDIA command:
+
+```text
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+Startup automatically adds the archive fields through a database migration.
+Daily startup uses the same command without `--build`. Do not use `down -v`
+to delete individual items: it removes the application's named data volumes.
+
+## Development commands
 
 Backend tests:
 

@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 import uuid
+from functools import wraps
+from fyp_data_platform import lifecycle
 from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
@@ -435,6 +437,7 @@ def _run_summary(row: ModelRun) -> dict[str, Any]:
     artifacts = _artifacts(row)
     return {
         "id": row.id, "status": row.status, "modality": row.modality,
+        "archived": row.archived, "deleting": row.deleting,
         "dataset_id": config.get("dataset_id"), "recording_id": config.get("recording_id"),
         "compute": config.get("compute"),
         "runtime": payload.get("runtime"),
@@ -499,6 +502,7 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
                 "media_type": mimetypes.guess_type(source_video.source_relative_path)[0] or "application/octet-stream",
                 "browser_playable": Path(source_video.source_relative_path).suffix.lower() == ".mp4",
                 "url": f"/api/runs/{row.id}/source-video",
+                "pose_url": next((f"/api/runs/{row.id}/artifacts/{item['relative_path']}" for item in _artifacts(row) if item.get("relative_path") == "video_only/pose_keypoints.json"), None),
             }
             if source_video else None
         ),
@@ -527,6 +531,38 @@ def create_app(config_path: str | None = None) -> Any:
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024
 
+    def exclusive_change(handler):
+        @wraps(handler)
+        def guarded(*args, **kwargs):
+            if not run_lock.acquire(blocking=False):
+                return jsonify({"error": "Processing or another data change is active. Try again when it finishes."}), 409
+            try:
+                return handler(*args, **kwargs)
+            finally:
+                run_lock.release()
+        return guarded
+
+    @app.route("/api/manage/<kind>/<path:identity>", methods=["GET", "PATCH", "DELETE"])
+    @exclusive_change
+    def manage(kind, identity):
+        try:
+            data = request.get_json(silent=True) or {}
+            if request.method == "DELETE":
+                return jsonify(lifecycle.permanently_delete(session_factory, storage, settings, kind, identity, data.get("confirmation")))
+            with session_factory.begin() as session:
+                if request.method == "PATCH":
+                    if not isinstance(data.get("archived"), bool):
+                        raise ValueError("archived must be true or false")
+                    lifecycle.archive(session, kind, identity, data["archived"])
+                return jsonify(lifecycle.preview(session, kind, identity))
+        except LookupError as error:
+            return jsonify({"error": str(error)}), 404
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 409
+        except Exception:
+            app.logger.exception("Managed cleanup failed")
+            return jsonify({"error": "Cleanup did not finish. The item remains archived; retry permanent deletion to finish removing its files."}), 500
+
     @app.get("/api/health")
     def health() -> Any:
         with session_factory() as session:
@@ -545,18 +581,24 @@ def create_app(config_path: str | None = None) -> Any:
 
     @app.get("/api/catalog")
     def catalog() -> Any:
+        show_archived = request.args.get("archived") == "true"
         with session_factory() as session:
+            records = {r.id: r for r in session.scalars(select(Recording)).all()}
             inputs = session.scalars(
                 select(StoredFile).where(
                     StoredFile.modality.in_(("video", "eeg", "labels")),
                     StoredFile.payload_state == "stored",
                 )
-                .order_by(StoredFile.created_at.desc()).limit(100)
+                .order_by(StoredFile.created_at.desc())
             ).all()
-            runs = session.scalars(select(ModelRun).order_by(ModelRun.started_at.desc()).limit(100)).all()
+            runs = session.scalars(select(ModelRun).order_by(ModelRun.started_at.desc())).all()
+            runs = [r for r in runs if bool(r.archived or (records.get(lifecycle.run_recording_id(r)) and records[lifecycle.run_recording_id(r)].archived)) == show_archived]
         grouped: dict[str, dict[str, Any]] = {}
         for row in inputs:
             if not row.recording_id:
+                continue
+            parent = records.get(row.recording_id)
+            if not parent or bool(parent.archived) != show_archived:
                 continue
             source_id = row.recording_id.split("::", 1)[1] if "::" in row.recording_id else row.recording_id
             recording = grouped.setdefault(row.recording_id, {
@@ -564,8 +606,9 @@ def create_app(config_path: str | None = None) -> Any:
                 "recording_id": row.recording_id, "recording_source_id": source_id,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "video": None, "eeg": None, "label": None,
+                "archived": parent.archived, "deleting": parent.deleting,
             })
-            if recording.get(row.modality) is not None:
+            if recording.get("label" if row.modality == "labels" else row.modality) is not None:
                 continue
             file_payload = {
                 "id": row.id, "filename": Path(row.source_relative_path).name,
@@ -579,8 +622,15 @@ def create_app(config_path: str | None = None) -> Any:
                 }
             else:
                 recording[row.modality] = file_payload
+        for parent in records.values():
+            if bool(parent.archived) == show_archived and parent.id not in grouped:
+                grouped[parent.id] = {"id": parent.id, "dataset_id": parent.dataset_id, "recording_source_id": parent.source_recording_id, "created_at": parent.created_at.isoformat(), "archived": parent.archived, "deleting": parent.deleting, "video": None, "eeg": None, "label": None}
         recordings = sorted(grouped.values(), key=lambda item: item.get("created_at") or "", reverse=True)
-        return jsonify({"recordings": recordings, "runs": [_run_summary(row) for row in runs]})
+        summaries = []
+        for row in runs:
+            parent = records.get(lifecycle.run_recording_id(row))
+            summaries.append({**_run_summary(row), "parent_archived": bool(parent and parent.archived)})
+        return jsonify({"recordings": recordings, "runs": summaries})
 
     @app.get("/api/runs/<run_id>")
     def run_result(run_id: str) -> Any:
@@ -657,6 +707,7 @@ def create_app(config_path: str | None = None) -> Any:
         return Response(body, mimetype=mimetypes.guess_type(relative_path)[0] or "application/octet-stream")
 
     @app.post("/api/uploads")
+    @exclusive_change
     def upload() -> Any:
         mode = str(request.form.get("mode", "video")).strip().lower()
         if mode not in {"video", "eeg", "unimodal"}:
@@ -673,6 +724,12 @@ def create_app(config_path: str | None = None) -> Any:
         try:
             patient_id = safe_entity(request.form.get("patient_id", "local-patient-001"))
             recording_id = str(request.form.get("recording_id", "")).strip()
+            with session_factory() as session:
+                dataset = safe_entity(request.form.get("dataset_id", "ui-recordings"))
+                for item in files:
+                    lifecycle.require_available(session, dataset, _recording_source_id(recording_id, Path(secure_filename(item.filename)).stem, len(files)))
+                if eeg_upload and eeg_upload.filename:
+                    lifecycle.require_available(session, dataset, safe_entity(recording_id or Path(secure_filename(eeg_upload.filename)).stem))
             if mode == "unimodal" and not recording_id:
                 raise ValueError("Recording ID is required when uploading video and EEG together.")
             label_identity = None
@@ -737,6 +794,12 @@ def create_app(config_path: str | None = None) -> Any:
             return jsonify({"error": "require_labels applies to video evaluation, not EEG CSV labels."}), 400
         if not run_lock.acquire(blocking=False):
             return jsonify({"error": "Another model run is already active."}), 409
+        try:
+            with session_factory() as session:
+                lifecycle.require_available(session, dataset_id, recording_id)
+        except ValueError as error:
+            run_lock.release()
+            return jsonify({"error": str(error)}), 409
         job_id = str(uuid.uuid4())
         job_started = time.monotonic()
         with jobs_lock:

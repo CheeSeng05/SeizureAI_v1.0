@@ -38,3 +38,7 @@ class StorageBackend(ABC):
 
     def exists(self, key: str) -> bool:
         return self.stat(key) is not None
+
+    def delete(self, key: str) -> None:
+        """Delete one managed object; missing objects count as success."""
+        raise NotImplementedError("This storage backend does not support deletion")

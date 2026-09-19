@@ -20,6 +20,10 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request('/api/health'),
   catalog: () => request('/api/catalog'),
+  archived: () => request('/api/catalog?archived=true'),
+  archive: (kind, id, archived = true) => request(`/api/manage/${kind}/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived }) }),
+  deletionPreview: (kind, id) => request(`/api/manage/${kind}/${encodeURIComponent(id)}`),
+  deleteItem: (kind, id, confirmation) => request(`/api/manage/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmation }) }),
   run: (id) => request(`/api/runs/${id}`),
   startRun: (datasetId, recordingId, mode = 'video', requireLabels = false) => request('/api/runs', {
     method: 'POST',

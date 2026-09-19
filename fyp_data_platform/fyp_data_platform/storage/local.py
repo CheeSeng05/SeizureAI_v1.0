@@ -37,6 +37,9 @@ class LocalStorage(StorageBackend):
         temporary.replace(destination)
         return ObjectMetadata(key=normalize_key(key), size_bytes=destination.stat().st_size, sha256=checksum)
 
+    def delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
     def download_file(self, key: str, destination: Path) -> ObjectMetadata:
         metadata = self.stat(key)
         if metadata is None:
