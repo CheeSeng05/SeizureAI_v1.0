@@ -8,8 +8,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from .speinet import DEFAULT_SPEINET_CHECKPOINT, SPEINetConfig, SPEINetEnhancer
-
+from .speinet_inference import DEFAULT_SPEINET_CHECKPOINT, SPEINetConfig, SPEINetEnhancer
 
 def iter_enhanced_frames(
     capture: Any, *, source_fps: float, fps: float, enhancer: SPEINetEnhancer,
@@ -79,7 +78,7 @@ def iter_enhanced_frames(
 
 
 def add_video_enhancement_arguments(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_argument_group("Video enhancement before face preprocessing")
+    group = parser.add_argument_group("Full-frame video enhancement")
     group.add_argument("--video-enhancement", choices=("none", "speinet"), default="none")
     group.add_argument("--speinet-checkpoint", type=Path, default=DEFAULT_SPEINET_CHECKPOINT)
     group.add_argument("--speinet-device", choices=("auto", "cpu", "cuda", "mps"), default="auto")

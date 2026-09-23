@@ -3,14 +3,22 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 from pathlib import Path
+from typing import Any, Iterable, Mapping
 
-from ._facial.face_preprocess import add_enhancement_arguments, enhancement_kwargs, extract_video
+
+from .frame_enhancement import add_enhancement_arguments, enhancement_kwargs
 from .preprocess_options import add_tuning_arguments, tuning_kwargs, validate_tuning
 from . import add_video_enhancement_arguments, video_enhancement_kwargs
 
+from FYPModels.preprocess.frame_enhancement import (
+    DEFAULT_SR_MODEL_DIR, SR_MODELS, SR_SCALES,
+    _load_sr_model, _sr_model_path, _upscaling, _validate_enhancement,
+    add_enhancement_arguments, enhancement_kwargs,
+)
 
 PLAN_FIELDS = (
     "source_video",
@@ -21,10 +29,59 @@ PLAN_FIELDS = (
     "split",
 )
 
+MANIFEST_FIELDS = (
+    "window_id",
+    "dataset",
+    "patient_id",
+    "recording_id",
+    "source_video",
+    "start_sec",
+    "end_sec",
+    "label",
+    "split",
+    "sampled_fps",
+    "frame_count",
+    "pose_path",
+    "face_path",
+    "face_geometry_path",
+    "face_size",
+    "pose_detection_fraction",
+    "face_detection_fraction",
+    "face_region_fraction",
+    "face_landmark_fraction",
+    "pose_head_fallback_fraction",
+    "face_box_reused_fraction",
+)
 
 def _patient_id(path: Path) -> str:
     return path.stem.split("_", 1)[0]
 
+def patient_split(patient_id: str, seed: int = 42) -> str:
+    """Assign all recordings from a patient to one deterministic split."""
+    value = int.from_bytes(hashlib.sha256(f"{seed}:{patient_id}".encode()).digest()[:8], "big") / 2**64
+    return "train" if value < .7 else "validation" if value < .85 else "test"
+
+def window_starts(frame_count: int, length: int, stride: int) -> range:
+    if length <= 0 or stride <= 0:
+        raise ValueError("Window length and stride must be positive")
+    return range(0, max(0, frame_count - length + 1), stride)
+
+
+def write_rows(
+    path: Path, rows: Iterable[dict[str, Any]], *, append: bool,
+    fieldnames: tuple[str, ...] = MANIFEST_FIELDS,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    has_header = append and path.is_file() and path.stat().st_size > 0
+    if has_header:
+        with path.open(encoding="utf-8", newline="") as stream:
+            if next(csv.reader(stream), []) != list(fieldnames):
+                raise ValueError(f"Manifest columns do not match this pipeline: {path}")
+    with path.open("a" if append else "w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        if not has_header:
+            writer.writeheader()
+        writer.writerows(rows)
 
 def stratified_video_plan(
     dataset_root: str | Path,
@@ -237,6 +294,8 @@ def main() -> None:
 
     if args.plan_only:
         return
+
+    from ._facial.face_preprocess import extract_video
 
     # Fail before expensive landmark extraction when the requested complete
     # window cannot fit inside any source clip.

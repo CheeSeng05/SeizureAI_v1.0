@@ -8,6 +8,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class FeatureFusionSpec:
+    facial_embedding_dim: int
     video_embedding_dim: int
     eeg_embedding_dim: int
     projection_dim: int = 128
@@ -16,6 +17,7 @@ class FeatureFusionSpec:
 
     def __post_init__(self) -> None:
         if min(
+            self.facial_embedding_dim,
             self.video_embedding_dim,
             self.eeg_embedding_dim,
             self.projection_dim,
@@ -29,7 +31,8 @@ class FeatureFusionSpec:
     def concatenated_dim(self) -> int:
         return self.projection_dim * 2
 
-    def validate_inputs(self, video_embedding: Any, eeg_embedding: Any) -> tuple[np.ndarray, np.ndarray]:
+    def validate_inputs(self, facial_embedding:Any, video_embedding: Any, eeg_embedding: Any) -> tuple[np.ndarray, np.ndarray]:
+        facial = np.asarray(facial_embedding)
         video = np.asarray(video_embedding)
         eeg = np.asarray(eeg_embedding)
         if video.ndim != 2 or eeg.ndim != 2:

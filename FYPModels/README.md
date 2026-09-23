@@ -86,7 +86,9 @@ image (as returned by `cv2.imread`). The algorithms are `bilinear`, `bicubic`,
 `edsr`, `espcn`, `fsrcnn`, and `lapsrn`. Neural models are cached for sequential
 calls; interpolation uses `cv2.resize` and needs no weights.
 
-`face_preprocess.py` owns the reusable upscaling functions.
+`preprocess/_facial/frame_enhancement.py` owns the reusable upscaling functions,
+crop sharpening and enhancement CLI options. `face_preprocess.py` imports these
+helpers and keeps them available for existing callers.
 `tests/test_upscaling.py` owns the comparison workflow and automated tests.
 From `FYPModels`, with the facial Python environment active, compare all six on
 the same small face crop:
@@ -169,7 +171,7 @@ before passing invalid frames onward; broad dataset reliability is unverified.
 
 ### Sharpening face crops during video preprocessing
 
-`enhance_face_crop()` in `facial_resnet/face_preprocess.py` reuses `_upscaling()`
+`enhance_face_crop()` in `preprocess/_facial/frame_enhancement.py` reuses `_upscaling()`
 and optionally applies an unsharp mask (adds a scaled difference between the
 crop and its Gaussian-blurred copy). Enable it on the video extraction command:
 
@@ -205,7 +207,7 @@ the selected neural checkpoint hash are recorded with each preprocessing run.
 To reference the code directly from another module:
 
 ```python
-from seizure_multimodal.facial_resnet.face_preprocess import enhance_face_crop
+from FYPModels.preprocess._facial.frame_enhancement import enhance_face_crop
 
 # face_bgr is a non-empty uint8 BGR crop from a decoded video frame.
 enhanced_bgr = enhance_face_crop(

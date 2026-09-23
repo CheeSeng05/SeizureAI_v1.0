@@ -15,7 +15,8 @@ import cv2
 import numpy as np
 
 from FYPModels.preprocess._facial import face_preprocess as preprocessing
-from seizure_multimodal.video.io import VideoMetadata
+from FYPModels.preprocess import frame_enhancement
+from FYPModels.preprocess.io import VideoMetadata
 
 
 class FaceEnhancementTest(unittest.TestCase):
@@ -51,7 +52,7 @@ class FaceEnhancementTest(unittest.TestCase):
 
     def test_enhancement_reuses_existing_upscaler_on_native_crop(self):
         crop = self.image[4:16, 6:18]
-        with patch.object(preprocessing, "_upscaling", wraps=preprocessing._upscaling) as upscale:
+        with patch.object(frame_enhancement, "_upscaling", wraps=frame_enhancement._upscaling) as upscale:
             result = preprocessing.enhance_face_crop(
                 crop, upscale_model=" BICUBIC ", upscale_scale=2, sharpen_amount=.5,
             )

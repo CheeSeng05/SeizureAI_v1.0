@@ -10,7 +10,6 @@ pose-derived head crops remain available when the face detector misses.
 """
 from __future__ import annotations
 
-import cv2
 import argparse
 import csv
 import hashlib
@@ -20,7 +19,6 @@ import sys
 import time
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -33,7 +31,9 @@ if not __package__:
 
 from ...seizure_multimodal.progress import report_progress
 from ...seizure_multimodal.reproducibility import build_preprocessing_record, save_run_record
-from ...seizure_multimodal.video.io import iter_sampled_frames, open_video
+
+from ..preprocess import PreprocessSummary
+from ..io import iter_sampled_frames, open_video
 from .. import (
     SPEINetConfig, SPEINetEnhancer, add_video_enhancement_arguments,
     iter_enhanced_frames, video_enhancement_kwargs,
@@ -42,17 +42,39 @@ from ..preprocess_diagnostics import frame_diagnostics, write_diagnostics
 from ..preprocess_options import (
     add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
 )
+from ..video_preprocess import _normalized_pose, _select_patient_pose, _pose_head_center
+from ..prepare_dataset import (
+    patient_split as _patient_split,
+    window_starts as _window_starts,
+    write_rows as _write_rows,
+)
+# Re-export enhancement helpers to preserve existing face_preprocess imports.
+from ..frame_enhancement import (
+    DEFAULT_SR_MODEL_DIR, SR_MODELS, SR_SCALES,
+    _load_sr_model, _sr_model_path, _upscaling, _validate_enhancement,
+    add_enhancement_arguments, enhance_face_crop, enhancement_kwargs,
+)
 
+from mediapipe.python.solutions import face_mesh_connections
+
+FACE_CONTOURS = face_mesh_connections.FACEMESH_CONTOURS
+FACE_IRISES = face_mesh_connections.FACEMESH_IRISES
+FACE_OVAL = face_mesh_connections.FACEMESH_FACE_OVAL
+LEFT_EYE_CONNECTIONS = face_mesh_connections.FACEMESH_LEFT_EYE
+LEFT_EYEBROW_CONNECTIONS = face_mesh_connections.FACEMESH_LEFT_EYEBROW
+RIGHT_EYE_CONNECTIONS = face_mesh_connections.FACEMESH_RIGHT_EYE
+RIGHT_EYEBROW_CONNECTIONS = face_mesh_connections.FACEMESH_RIGHT_EYEBROW
+LIP_CONNECTIONS = face_mesh_connections.FACEMESH_LIPS
 
 FACE_LANDMARK_PAIRS = (
-    (33, 133),
-    (362, 263),
-    (159, 145),
-    (386, 374),
-    (61, 291),
-    (13, 14),
-    (78, 308),
-    (1, 152),
+    (33, 133), # RIGHT EYE
+    (362, 263), # LEFT EYE
+    (159, 145), # RIGHT EYE OPENING
+    (386, 374), # LEFT EYE OPENING
+    (61, 291), # MOUTH WIDTH
+    (13, 14), # MOUTH OPENING
+    (78, 308), # INNER MOUTH WIDTH
+    (1, 152), # NOSE-TO-CHIN RELATIONSHIP
     (10, 152),
     (234, 454),
 )
@@ -80,282 +102,6 @@ MANIFEST_FIELDS = (
     "pose_head_fallback_fraction",
     "face_box_reused_fraction",
 )
-
-SR_MODELS = {
-    # OpenCV interpolation methods
-    "bilinear": cv2.INTER_LINEAR,
-    "bicubic": cv2.INTER_CUBIC,
-
-    # Supported deep-learning super-resolution models
-    "edsr": "EDSR_x4.pb",
-    "espcn": "ESPCN_x4.pb",
-    "fsrcnn": "FSRCNN_x4.pb",
-    "lapsrn": "LapSRN_x4.pb",
-}
-SR_SCALES = {
-    "edsr": (2, 3, 4), "espcn": (2, 3, 4),
-    "fsrcnn": (2, 3, 4), "lapsrn": (2, 4, 8),
-}
-DEFAULT_SR_MODEL_DIR = Path(__file__).resolve().parents[2] / "checkpoints/pretrained/super_resolution"
-
-@dataclass(frozen=True)
-class PreprocessSummary:
-    source_video: str
-    source_fps: float
-    sampled_fps: float
-    sampled_frames: int
-    windows_written: int
-    manifest_path: str | None
-    diagnostics_path: str | None = None
-    run_record_path: str | None = None
-
-
-def _patient_split(patient_id: str, seed: int = 42) -> str:
-    """Assign all recordings from a patient to one deterministic split."""
-    value = int.from_bytes(hashlib.sha256(f"{seed}:{patient_id}".encode()).digest()[:8], "big") / 2**64
-    return "train" if value < .7 else "validation" if value < .85 else "test"
-
-
-def _window_starts(frame_count: int, length: int, stride: int) -> range:
-    if length <= 0 or stride <= 0:
-        raise ValueError("Window length and stride must be positive")
-    return range(0, max(0, frame_count - length + 1), stride)
-
-
-def _write_rows(path: Path, rows: Iterable[dict[str, Any]], *, append: bool) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    has_header = append and path.is_file() and path.stat().st_size > 0
-    with path.open("a" if append else "w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=MANIFEST_FIELDS)
-        if not has_header:
-            writer.writeheader()
-        writer.writerows(rows)
-
-def _sr_model_path(model: str, scale: int, model_dir: str | Path) -> Path:
-    if scale not in SR_SCALES[model]:
-        raise ValueError(f"{model} supports scales {SR_SCALES[model]}, received {scale}")
-    prefix = SR_MODELS[model].split("_x", 1)[0]
-    return Path(model_dir).resolve() / f"{prefix}_x{scale}.pb"
-
-
-@lru_cache(maxsize=4)
-def _load_sr_model(model: str, scale: int, model_path: str) -> Any:
-    """Reuse loaded networks for sequential frame processing in this process."""
-    if not hasattr(cv2, "dnn_superres"):
-        raise RuntimeError(
-            "Neural upscaling requires an OpenCV contrib build with dnn_superres. "
-            "Install opencv-contrib-python or opencv-contrib-python-headless."
-        )
-    if not Path(model_path).is_file():
-        raise FileNotFoundError(
-            f"Super-resolution model not found: {model_path}. "
-            "Run python -m tests.test_upscaling with --download-models to fetch the weights."
-        )
-    sr = cv2.dnn_superres.DnnSuperResImpl_create()
-    sr.readModel(model_path)
-    sr.setModel(model, scale)
-    return sr
-
-
-def _upscaling(
-    image: np.ndarray, model: str, *, scale: int = 4,
-    model_dir: str | Path = DEFAULT_SR_MODEL_DIR,
-) -> np.ndarray:
-    """Upscale a uint8 BGR image by an integer factor (default: 4 for all six).
-
-    Interpolation needs no weights. Neural methods use the checkpoint matching
-    ``scale`` and cache up to four networks; do not share them across threads.
-    """
-    model = model.strip().lower()
-    if model not in SR_MODELS:
-        raise ValueError(f"Unknown upscaling model {model!r}; choose from {tuple(SR_MODELS)}")
-    if isinstance(scale, bool) or not isinstance(scale, (int, np.integer)) or scale < 2:
-        raise ValueError("scale must be an integer of at least 2")
-    scale = int(scale)
-    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3 or image.size == 0:
-        raise ValueError("image must be a non-empty BGR image with shape [H, W, 3]")
-    if image.dtype != np.uint8:
-        raise ValueError("image must have dtype uint8 (pixel values 0 to 255)")
-    if model in {"bilinear", "bicubic"}:
-        return cv2.resize(
-            image, (image.shape[1] * scale, image.shape[0] * scale),
-            interpolation=SR_MODELS[model],
-        )
-    model_path = _sr_model_path(model, scale, model_dir)
-    sr = _load_sr_model(model, scale, str(model_path))
-    return sr.upsample(np.ascontiguousarray(image))
-
-
-def _validate_enhancement(
-    *, upscale_model: str | None, upscale_scale: int,
-    sharpen_amount: float, sharpen_sigma: float,
-) -> None:
-    if upscale_model is not None and upscale_model not in SR_MODELS:
-        raise ValueError(f"Unknown upscaling model {upscale_model!r}; choose from {tuple(SR_MODELS)}")
-    if isinstance(upscale_scale, bool) or not isinstance(upscale_scale, (int, np.integer)) or upscale_scale < 2:
-        raise ValueError("upscale_scale must be an integer of at least 2")
-    if upscale_model in SR_SCALES and upscale_scale not in SR_SCALES[upscale_model]:
-        raise ValueError(f"{upscale_model} supports scales {SR_SCALES[upscale_model]}")
-    if not math.isfinite(sharpen_amount) or sharpen_amount < 0:
-        raise ValueError("sharpen_amount must be finite and nonnegative")
-    if not math.isfinite(sharpen_sigma) or sharpen_sigma <= 0:
-        raise ValueError("sharpen_sigma must be finite and positive")
-
-
-def enhance_face_crop(
-    image: np.ndarray, *, upscale_model: str | None = None,
-    upscale_scale: int = 4, sr_model_dir: str | Path = DEFAULT_SR_MODEL_DIR,
-    sharpen_amount: float = 0.0, sharpen_sigma: float = 1.0,
-) -> np.ndarray:
-    """Optionally upscale, then sharpen a uint8 BGR crop without modifying it.
-
-    Reuses ``_upscaling`` and its cached neural weights. Unsharp masking adds
-    ``amount * (image - GaussianBlur(image))`` to enhance existing edges; it
-    cannot recover missing detail. Sigma is measured in pixels after upscaling.
-    Defaults preserve the input pixels. Apply to a crop, before RGB conversion.
-    """
-    if upscale_model is not None:
-        upscale_model = upscale_model.strip().lower()
-    _validate_enhancement(
-        upscale_model=upscale_model, upscale_scale=upscale_scale,
-        sharpen_amount=sharpen_amount, sharpen_sigma=sharpen_sigma,
-    )
-    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3 or image.size == 0:
-        raise ValueError("image must be a non-empty BGR image with shape [H, W, 3]")
-    if image.dtype != np.uint8:
-        raise ValueError("image must have dtype uint8 (pixel values 0 to 255)")
-    result = image.copy() if upscale_model is None else _upscaling(
-        image, upscale_model, scale=upscale_scale, model_dir=sr_model_dir,
-    )
-    if sharpen_amount > 0:
-        pixels = result.astype(np.float32)
-        blurred = cv2.GaussianBlur(pixels, (0, 0), sigmaX=sharpen_sigma)
-        # Floating-point subtraction and clipping avoid uint8 wraparound.
-        sharpened = cv2.addWeighted(pixels, 1 + sharpen_amount, blurred, -sharpen_amount, 0)
-        result = np.clip(np.rint(sharpened), 0, 255).astype(np.uint8)
-    return np.ascontiguousarray(result)
-
-
-def add_enhancement_arguments(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_argument_group("Face crop enhancement (disabled by default)")
-    group.add_argument("--upscale-model", choices=tuple(SR_MODELS),
-                       help="Upscale head/face crops before landmark detection and RGB extraction.")
-    group.add_argument("--upscale-scale", type=int, default=4)
-    group.add_argument("--sr-model-dir", type=Path, default=DEFAULT_SR_MODEL_DIR)
-    group.add_argument("--sharpen-amount", type=float, default=0.0,
-                       help="Unsharp-mask strength; 0 disables sharpening (try 0.5).")
-    group.add_argument("--sharpen-sigma", type=float, default=1.0,
-                       help="Gaussian blur sigma in crop pixels after upscaling.")
-
-
-def enhancement_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    return {name: getattr(args, name) for name in (
-        "upscale_model", "upscale_scale", "sr_model_dir", "sharpen_amount", "sharpen_sigma",
-    )}
-
-
-def _normalized_pose(result: Any, pose_index: int = 0) -> tuple[np.ndarray, bool]:
-    if not result.pose_landmarks:
-        return np.zeros((33, 4), dtype=np.float32), False
-
-    if pose_index < 0 or pose_index >= len(result.pose_landmarks):
-        return np.zeros((33, 4), dtype=np.float32), False
-    landmarks = result.pose_landmarks[pose_index]
-
-    pose = np.asarray(
-        [
-            [
-                float(point.x or 0.0),
-                float(point.y or 0.0),
-                float(point.z or 0.0),
-                float(point.visibility or 0.0),
-            ]
-            for point in landmarks
-        ],
-        dtype=np.float32,
-    )
-
-    if pose.shape != (33, 4):
-        return np.zeros((33, 4), dtype=np.float32), False
-
-    center = (pose[23, :3] + pose[24, :3]) / 2
-    scale = float(
-        np.linalg.norm(pose[11, :3] - pose[12, :3])
-    )
-
-    if scale > 1e-6:
-        pose[:, :3] = (pose[:, :3] - center) / scale
-
-    return pose, True
-
-
-def _select_patient_pose(
-    result: Any,
-    patient_roi: tuple[float, float, float, float],
-    previous_head_center: tuple[float, float] | None = None,
-    max_head_jump: float = 0.18,
-) -> int | None:
-    """Select/track one patient's head without switching to another person."""
-    if not result.pose_landmarks:
-        return None
-    x1, y1, x2, y2 = patient_roi
-    candidates: list[tuple[float, float, int]] = []
-    for index, landmarks in enumerate(result.pose_landmarks):
-        head = landmarks[:11]
-        visible = [
-            point
-            for point in head
-            if point.x is not None
-            and point.y is not None
-            and (point.visibility is None or point.visibility >= 0.2)
-            and (point.presence is None or point.presence >= 0.2)
-        ]
-        if not visible:
-            continue
-        center_x = float(np.mean([point.x for point in visible]))
-        center_y = float(np.mean([point.y for point in visible]))
-        if not (x1 <= center_x <= x2 and y1 <= center_y <= y2):
-            continue
-        visibility = float(
-            np.mean([
-                point.visibility if point.visibility is not None else 1.0
-                for point in visible
-            ])
-        )
-        if previous_head_center is None:
-            # First acquisition: prefer the most complete, visible head in ROI.
-            candidates.append((0.0, -(visibility * len(visible)), index))
-            continue
-        distance = float(
-            np.hypot(
-                center_x - previous_head_center[0],
-                center_y - previous_head_center[1],
-            )
-        )
-        if distance <= max_head_jump:
-            # Tracking: spatial continuity takes priority over visibility.
-            candidates.append((distance, -(visibility * len(visible)), index))
-    return min(candidates)[2] if candidates else None
-
-
-def _pose_head_center(result: Any, pose_index: int | None) -> tuple[float, float] | None:
-    if pose_index is None or not result.pose_landmarks:
-        return None
-    visible = [
-        point
-        for point in result.pose_landmarks[pose_index][:11]
-        if point.x is not None
-        and point.y is not None
-        and (point.visibility is None or point.visibility >= 0.2)
-        and (point.presence is None or point.presence >= 0.2)
-    ]
-    if not visible:
-        return None
-    return (
-        float(np.mean([point.x for point in visible])),
-        float(np.mean([point.y for point in visible])),
-    )
-
 
 def _square_box(
     center_x: float,
@@ -424,7 +170,6 @@ class _DetectedFace:
     box: np.ndarray
     center: tuple[float, float]
     detection: Any
-
 
 def _select_face_detection(
     result: Any,
@@ -1295,8 +1040,6 @@ def main() -> None:
             diagnostics_only=args.diagnostics_only,
             max_duration_seconds=args.max_duration_seconds,
             progress_config={"testing": {"progress_file": args.progress_file}})
-    
-
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-# SPEINet video enhancement
+# Video Enhancement and Facial Detection
 
 This module integrates [yangt1013/SPEINet](https://github.com/yangt1013/SPEINet)
 before facial preprocessing:

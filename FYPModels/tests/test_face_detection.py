@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from FYPModels.preprocess._facial import face_preprocess as preprocessing
-from FYPModels.seizure_multimodal.video.io import VideoMetadata
+from FYPModels.preprocess.io import VideoMetadata
 
 
 def detection(x=.2, y=.2, width=.2, height=.2, score=.9):

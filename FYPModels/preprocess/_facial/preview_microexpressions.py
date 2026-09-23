@@ -24,7 +24,7 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     __package__ = "FYPModels.preprocess._facial"
 
-from ...seizure_multimodal.video.io import open_video, iter_sampled_frames
+from ..io import open_video, iter_sampled_frames
 from .face_localization import DEFAULT_YUNET_MODEL, YuNetLocalizer, face_crop_box, landmark_agreement_error
 
 LEFT_EYE = [362, 385, 387, 263, 373, 380]

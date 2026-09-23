@@ -28,9 +28,9 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from seizure_multimodal.checkpoints.provenance import sha256_file
-from seizure_multimodal.video.io import open_video
-from FYPModels.preprocess._facial import face_preprocess as preprocessing
-from FYPModels.preprocess._facial.face_preprocess import (
+from FYPModels.preprocess.io import open_video
+from FYPModels.preprocess import frame_enhancement as preprocessing
+from FYPModels.preprocess.frame_enhancement import (
     DEFAULT_SR_MODEL_DIR, SR_MODELS, _sr_model_path, _upscaling,
 )
 

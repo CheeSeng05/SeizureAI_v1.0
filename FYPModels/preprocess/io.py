@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..data_inspection import MP4VideoMetadata, inspect_mp4
+from ..seizure_multimodal.data_inspection import MP4VideoMetadata, inspect_mp4
 
 
 @dataclass(frozen=True)

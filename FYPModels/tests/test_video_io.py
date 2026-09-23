@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from seizure_multimodal.data_inspection import MP4VideoMetadata
-from seizure_multimodal.video.io import iter_sampled_frames, open_video
+from FYPModels.preprocess.io import iter_sampled_frames, open_video
 
 
 class VideoIOTest(unittest.TestCase):

@@ -5,15 +5,18 @@ import csv
 import json
 import random
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from .facial_model import InceptionResnetV1GRUAttention
 from ..evaluation.classification import binary_classification_metrics
 from ..evaluation.thresholds import select_threshold
+
+if TYPE_CHECKING:
+    from .facial_model import InceptionResnetV1GRUAttention
 
 
 CLASSES = ("normal", "seizure")
@@ -231,6 +234,9 @@ def main() -> None:
         default="auto",
     )
     args = parser.parse_args()
+
+    # Dataset and device helpers do not need the optional facial backbone.
+    from .facial_model import InceptionResnetV1GRUAttention
 
     random.seed(args.seed)
     np.random.seed(args.seed)
