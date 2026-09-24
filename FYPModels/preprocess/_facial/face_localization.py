@@ -1,4 +1,4 @@
-"""Independent face localization and landmark agreement checks for diagnostics."""
+"""Shared YuNet localization and landmark agreement checks for preprocessing and previews."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -57,7 +57,8 @@ class YuNetLocalizer:
         self.detector = cv2.FaceDetectorYN.create(str(path), "", (320, 320), confidence, .3, 5000)
 
     def detect(self, frame: np.ndarray, patient_roi: tuple[float, ...],
-               previous_center: np.ndarray | None = None) -> LocalizedFace | None:
+               previous_center: np.ndarray | None = None, *,
+               max_jump: float = .18) -> LocalizedFace | None:
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = np.rint(np.array(patient_roi) * [width, height, width, height]).astype(int)
         if x2 <= x1 or y2 <= y1:
@@ -65,7 +66,7 @@ class YuNetLocalizer:
         crop = np.ascontiguousarray(frame[y1:y2, x1:x2])
         self.detector.setInputSize((crop.shape[1], crop.shape[0]))
         _, faces = self.detector.detect(crop)
-        return select_face(faces, (x1, y1), frame.shape, patient_roi, previous_center)
+        return select_face(faces, (x1, y1), frame.shape, patient_roi, previous_center, max_jump)
 
 
 def face_crop_box(face: LocalizedFace, frame_shape: tuple, margin: float = .15) -> np.ndarray:

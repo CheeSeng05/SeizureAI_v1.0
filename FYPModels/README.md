@@ -48,7 +48,7 @@ pipeline on one seizure video before preparing the complete dataset:
 
 ```bash
 MPLCONFIGDIR=/tmp/mpl-facial \
-python -m seizure_multimodal.facial_resnet.face_preprocess \
+python preprocess/_facial/face_preprocess.py \
   "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
   --output results/facial_head_smoke \
   --sample-id seizure_S1_5_136 \
@@ -59,15 +59,14 @@ python -m seizure_multimodal.facial_resnet.face_preprocess \
   --window-seconds 2 \
   --stride-seconds 1 \
   --max-poses 4 \
-  --head-margin 0.75 \
   --patient-roi "0.28,0.05,0.70,0.90" \
   --preview \
   --preview-delay-ms 150
 ```
 
-The preview displays the selected head region and the exact `224×224` crop
-used to construct the model input. Press `q` or Escape to close the preview;
-preprocessing continues after the window closes. The patient ROI uses
+The preview displays the YuNet face detection and the exact `224×224` crop
+used to construct the model input. Press `q` or Escape to stop processing and
+save complete windows processed so far. The patient ROI uses
 normalized `x1,y1,x2,y2` coordinates and should include the patient's possible
 head movement while excluding caretakers where possible.
 
@@ -176,7 +175,7 @@ and optionally applies an unsharp mask (adds a scaled difference between the
 crop and its Gaussian-blurred copy). Enable it on the video extraction command:
 
 ```bash
-python -m seizure_multimodal.facial_resnet.face_preprocess \
+python preprocess/_facial/face_preprocess.py \
   "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
   --output results/facial_sharpened \
   --patient-id S1 --label 1 --split unassigned \
@@ -334,7 +333,7 @@ landmark availability. Reuse is also applied after detection.
 Inspect the source video against the frame boxes and review candidate crops:
 
 ```bash
-python -m seizure_multimodal.facial_resnet.face_preprocess \
+python preprocess/_facial/face_preprocess.py \
   "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
   --output results/preprocessing_candidate_preview \
   --patient-roi "0.28,0.05,0.70,0.90" \

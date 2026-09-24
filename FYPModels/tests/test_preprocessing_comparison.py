@@ -96,10 +96,12 @@ class PreprocessingComparisonTest(unittest.TestCase):
             detect_for_video=Mock(side_effect=RuntimeError("inference failed") if fail_inference else results),
             close=Mock(),
         )
+        landmarks = [SimpleNamespace(x=.5, y=.5)] * 478
         face_api = SimpleNamespace(
-            detect_for_video=Mock(return_value=SimpleNamespace(face_landmarks=[])), close=Mock(),
+            detect=Mock(return_value=SimpleNamespace(face_landmarks=[landmarks])), close=Mock(),
         )
-        detector = SimpleNamespace(process=Mock(return_value=SimpleNamespace(detections=[])), close=Mock())
+        face = preprocessing.LocalizedFace(np.array([2, 2, 18, 18]), np.full((5, 2), 10.), .9)
+        detector = SimpleNamespace(detect=Mock(side_effect=[face, face, None, None, None, None, face]))
         if resources is not None:
             resources.update(capture=capture, pose=pose_api, face=face_api, detector=detector)
         options = {}
@@ -111,26 +113,23 @@ class PreprocessingComparisonTest(unittest.TestCase):
             return pose_api if kind == "pose" else face_api
 
         vision = SimpleNamespace(
-            RunningMode=SimpleNamespace(VIDEO="video"),
+            RunningMode=SimpleNamespace(VIDEO="video", IMAGE="image"),
             PoseLandmarkerOptions=SimpleNamespace, FaceLandmarkerOptions=SimpleNamespace,
             PoseLandmarker=SimpleNamespace(create_from_options=lambda value: create("pose", value)),
             FaceLandmarker=SimpleNamespace(create_from_options=lambda value: create("face", value)),
         )
         mediapipe = SimpleNamespace(tasks=SimpleNamespace(vision=vision, BaseOptions=SimpleNamespace),
-                                    solutions=SimpleNamespace(face_detection=SimpleNamespace(
-                                        FaceDetection=Mock(return_value=detector))),
                                     Image=lambda **kwargs: kwargs, ImageFormat=SimpleNamespace(SRGB=1))
         video = root / "input.mp4"
         model = root / "model.task"
         video.touch(); model.touch()
         with patch.dict("sys.modules", {"cv2": cv2, "mediapipe": mediapipe}), \
-             patch.object(preprocessing, "_pose_head_box", side_effect=lambda result, index, *args: None if index is None else np.array([2, 2, 18, 18])), \
-             patch.object(preprocessing, "_face_box", return_value=np.array([0, 0, 10, 10], dtype=np.float32)), \
+             patch.object(preprocessing, "YuNetLocalizer", return_value=detector), \
              patch.object(preprocessing, "_face_geometry", return_value=(np.ones(20), True)), \
              patch.object(preprocessing, "_crop_face_input", side_effect=lambda image, box, gray, **kw: (np.full((4, 16, 16), int(box is not None)), None)), \
              contextlib.redirect_stdout(io.StringIO()):
             result = preprocessing.extract_video(
-                video, root / "output", "sample", pose_model_path=model, face_model_path=model,
+                video, root / "output", "sample", pose_model_path=model, face_model_path=model, face_detector_model=model,
                 window_seconds=1, face_size=16, max_box_reuse_seconds=.4,
                 min_pose_detection_confidence=.55, min_pose_presence_confidence=.65,
                 min_pose_tracking_confidence=.6, min_face_detection_confidence=.6,
@@ -160,9 +159,9 @@ class PreprocessingComparisonTest(unittest.TestCase):
             self.assertEqual(result.sampled_frames, 7)
             for call in resources["pose"].detect_for_video.call_args_list:
                 self.assertTrue(np.all(call.args[0]["data"] == 123))
-            for call in resources["face"].detect_for_video.call_args_list:
+            for call in resources["face"].detect.call_args_list:
                 self.assertTrue(np.all(call.args[0]["data"] == 123))
-            for call in resources["detector"].process.call_args_list:
+            for call in resources["detector"].detect.call_args_list:
                 self.assertTrue(np.all(call.args[0] == 123))
             record = json.loads(Path(result.run_record_path).read_text())
             self.assertEqual(record["settings"]["video_enhancement"]["model"], "speinet")
@@ -253,7 +252,6 @@ class PreprocessingComparisonTest(unittest.TestCase):
                 )
             resources["pose"].close.assert_called_once_with()
             resources["face"].close.assert_called_once_with()
-            resources["detector"].close.assert_called_once_with()
             resources["capture"].release.assert_called_once_with()
             self.assertEqual(json.loads(progress.read_text())["percent"], 0)
             self.assertFalse(list(root.rglob("runs/*.json")))

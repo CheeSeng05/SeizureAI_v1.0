@@ -123,21 +123,23 @@ class FaceEnhancementTest(unittest.TestCase):
         self.assertEqual(settings["sharpen_amount"], .5)
 
     def test_pipeline_enhances_detector_crop_and_keeps_original_coordinates(self):
-        landmarks = [SimpleNamespace(x=x, y=y, z=0) for x, y in ((.25, .25), (.75, .75))]
+        anchors = np.array([[.3, .3], [.7, .3], [.5, .5], [.35, .7], [.65, .7]])
+        points = np.full((478, 2), .5)
+        points[[33, 133]] = anchors[0]
+        points[[362, 263]] = anchors[1]
+        points[1], points[61], points[291] = anchors[2:]
+        landmarks = [SimpleNamespace(x=x, y=y, z=0) for x, y in points]
         face_result = SimpleNamespace(face_landmarks=[landmarks], face_blendshapes=[],
                                       facial_transformation_matrixes=[])
         pose_api = SimpleNamespace(detect_for_video=Mock(return_value=object()), close=Mock())
-        face_api = SimpleNamespace(detect_for_video=Mock(return_value=face_result), close=Mock())
+        face_api = SimpleNamespace(detect=Mock(return_value=face_result), close=Mock())
         vision = SimpleNamespace(
-            RunningMode=SimpleNamespace(VIDEO="video"),
+            RunningMode=SimpleNamespace(VIDEO="video", IMAGE="image"),
             PoseLandmarkerOptions=SimpleNamespace, FaceLandmarkerOptions=SimpleNamespace,
             PoseLandmarker=SimpleNamespace(create_from_options=lambda options: pose_api),
             FaceLandmarker=SimpleNamespace(create_from_options=lambda options: face_api),
         )
         mediapipe = SimpleNamespace(tasks=SimpleNamespace(vision=vision, BaseOptions=SimpleNamespace),
-                                    solutions=SimpleNamespace(face_detection=SimpleNamespace(
-                                        FaceDetection=Mock(return_value=SimpleNamespace(
-                                            process=Mock(return_value=SimpleNamespace(detections=[])), close=Mock())))),
                                     Image=lambda **kwargs: kwargs, ImageFormat=SimpleNamespace(SRGB=1))
         capture = SimpleNamespace(read=Mock(side_effect=[(True, self.image), (False, None)]))
         with tempfile.TemporaryDirectory() as temporary:
@@ -149,17 +151,16 @@ class FaceEnhancementTest(unittest.TestCase):
             with patch.dict("sys.modules", {"mediapipe": mediapipe}), \
                  patch.object(preprocessing, "open_video", return_value=contextlib.nullcontext((capture, metadata))), \
                  patch.object(preprocessing, "_select_patient_pose", return_value=0), \
-                 patch.object(preprocessing, "_pose_head_center", return_value=(.5, .5)), \
                  patch.object(preprocessing, "_normalized_pose", return_value=(np.zeros((33, 4)), True)), \
-                 patch.object(preprocessing, "_pose_head_box", return_value=np.array([8, 4, 24, 20])), \
-                 patch.object(preprocessing, "_face_geometry", return_value=(np.zeros(20), True)), \
+                 patch.object(preprocessing, "YuNetLocalizer", return_value=SimpleNamespace(detect=Mock(
+                     return_value=preprocessing.LocalizedFace(np.array([8, 4, 24, 20]), anchors * 16 + [8, 4], .9)))), \
                  contextlib.redirect_stdout(io.StringIO()):
                 summary = preprocessing.extract_video(
                     source, root / "output", "sample", fps=5, window_seconds=.2,
-                    pose_model_path=model, face_model_path=model, face_margin=0, face_size=16,
+                    pose_model_path=model, face_model_path=model, face_detector_model=model, face_margin=0, face_size=16,
                     upscale_model="bicubic", upscale_scale=2, sharpen_amount=.5,
                 )
-            detected_rgb = face_api.detect_for_video.call_args.args[0]["data"]
+            detected_rgb = face_api.detect.call_args.args[0]["data"]
             self.assertEqual(detected_rgb.shape, (32, 32, 3))
             expected_bgr = preprocessing.enhance_face_crop(
                 self.image[4:20, 8:24], upscale_model="bicubic", upscale_scale=2, sharpen_amount=.5,
@@ -171,7 +172,9 @@ class FaceEnhancementTest(unittest.TestCase):
             with Path(report["frames_path"]).open() as stream:
                 row = next(csv.DictReader(stream))
             self.assertEqual([float(row[f"crop_{name}"]) for name in ("x1", "y1", "x2", "y2")],
-                             [12, 8, 20, 16])
+                             [8, 4, 24, 20])
+            self.assertEqual(row["face_landmarks_detected"], "1")
+            self.assertAlmostEqual(float(row["landmark_error_fraction"]), 0)
             self.assertEqual(summary.windows_written, 1)
             face = np.load(next((root / "output/face").glob("*.npy")))
             self.assertEqual(face.shape, (1, 4, 16, 16))

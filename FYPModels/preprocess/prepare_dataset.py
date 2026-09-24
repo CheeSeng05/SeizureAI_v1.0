@@ -246,8 +246,11 @@ def main() -> None:
     parser.add_argument("--window-seconds", type=float, default=4.0)
     parser.add_argument("--stride-seconds", type=float, default=2.0)
     parser.add_argument("--face-size", type=int, default=224)
+    parser.add_argument("--face-detector-model", type=Path,
+                        default=Path(__file__).resolve().parents[1] / "checkpoints/pretrained/yunet/face_detection_yunet_2023mar.onnx")
+    parser.add_argument("--face-confidence", type=float, default=.8)
+    parser.add_argument("--max-landmark-error", type=float, default=.2)
     parser.add_argument("--max-poses", type=int, default=4)
-    parser.add_argument("--head-margin", type=float, default=0.75)
     parser.add_argument("--max-head-jump", type=float, default=0.18)
     add_tuning_arguments(parser)
     add_enhancement_arguments(parser)
@@ -352,6 +355,9 @@ def main() -> None:
             args.window_seconds,
             pose_model_path=args.pose_model,
             face_model_path=args.face_model,
+            face_detector_model=args.face_detector_model,
+            face_confidence=args.face_confidence,
+            max_landmark_error=args.max_landmark_error,
             stride_seconds=args.stride_seconds,
             patient_id=row["patient_id"],
             label=row["label"],
@@ -360,7 +366,6 @@ def main() -> None:
             face_size=args.face_size,
             patient_roi=tuple(roi_config.get(row["patient_id"], [0, 0, 1, 1])),
             max_poses=args.max_poses,
-            head_margin=args.head_margin,
             max_head_jump=args.max_head_jump,
             **tuning_kwargs(args),
             **enhancement_kwargs(args),

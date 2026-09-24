@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .face_preprocess import extract_video
+from .face_localization import DEFAULT_YUNET_MODEL
 from ..preprocess_options import BASELINE_TUNING, CONFIDENCE_OPTIONS, validate_tuning
 
 
@@ -67,8 +68,9 @@ def run_comparison(videos: list[Path], output: Path, experiments: list[dict[str,
             raise FileNotFoundError(path)
     for experiment in experiments:
         validate_tuning(experiment["tuning"])
+    common = {"face_detector_model": str(DEFAULT_YUNET_MODEL), **common}
     models = {}
-    for name in ("pose_model_path", "face_model_path"):
+    for name in ("pose_model_path", "face_model_path", "face_detector_model"):
         path = Path(common[name]).resolve()
         models[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     output = output.resolve()
@@ -120,11 +122,13 @@ def main() -> None:
                         help="Use only the first N seconds of each input video.")
     parser.add_argument("--pose-model", default="checkpoints/pretrained/mediapipe/pose_landmarker_full.task")
     parser.add_argument("--face-model", default="checkpoints/pretrained/mediapipe/face_landmarker.task")
+    parser.add_argument("--face-detector-model", type=Path, default=DEFAULT_YUNET_MODEL)
+    parser.add_argument("--face-confidence", type=float, default=.8)
+    parser.add_argument("--max-landmark-error", type=float, default=.2)
     parser.add_argument("--patient-roi", default="0,0,1,1",
                         help="Common normalized x1,y1,x2,y2 region for these videos.")
     parser.add_argument("--max-poses", type=int, default=4)
     parser.add_argument("--max-head-jump", type=float, default=0.18)
-    parser.add_argument("--head-margin", type=float, default=0.75)
     parser.add_argument("--face-margin", type=float, default=0.25)
     parser.add_argument("--face-size", type=int, default=224)
     parser.add_argument("--plan-only", action="store_true")
@@ -144,8 +148,10 @@ def main() -> None:
             "fps": args.fps, "max_duration_seconds": args.max_duration_seconds,
             "pose_model_path": str(Path(args.pose_model).resolve()),
             "face_model_path": str(Path(args.face_model).resolve()), "patient_roi": roi,
+            "face_detector_model": str(args.face_detector_model.resolve()),
+            "face_confidence": args.face_confidence, "max_landmark_error": args.max_landmark_error,
             "max_poses": args.max_poses, "max_head_jump": args.max_head_jump,
-            "head_margin": args.head_margin, "face_margin": args.face_margin,
+            "face_margin": args.face_margin,
             "face_size": args.face_size,
         }, plan_only=args.plan_only)
     except ValueError as exc:

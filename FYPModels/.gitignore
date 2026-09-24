@@ -33,3 +33,5 @@ checkpoints/pretrained/super_resolution/*.pb
 checkpoints/pretrained/speinet/*.pt
 checkpoints/pretrained/speinet/*.pth
 checkpoints/pretrained/yunet/*.onnx
+checkpoints/pretrained/facemap_3dmm/*.npy
+checkpoints/pretrained/facemap_3dmm/*.pth.tar

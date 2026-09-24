@@ -7,9 +7,10 @@ before facial preprocessing:
 Decoded video at source FPS
   -> SPEINet full-frame enhancement using neighbouring frames
   -> sampled enhanced frames with original timestamps and dimensions
-  -> full-frame MediaPipe Face Detection / patient selection
+  -> YuNet detection in the patient search ROI / patient selection
   -> pose detection, using the selected face to guide patient matching
-  -> face landmarks, stabilized face crops, RGB + optical-flow tensors
+  -> independent face landmarks checked against YuNet anchors
+  -> stabilized YuNet face crops, RGB + optical-flow tensors
 ```
 
 `FYPModels.preprocess._facial.face_preprocess.extract_video()` calls this module directly.
@@ -69,23 +70,34 @@ consumers. The iterator receives an open OpenCV capture and yields
 
 ## Face detection and preview
 
-The facial pipeline uses `mp.solutions.face_detection.FaceDetection` from the
-project's pinned `mediapipe==0.10.21`. Each sampled frame is converted from BGR
-to RGB after optional SPEINet enhancement. The detector defaults to
-`model_selection=1` (full range) and `min_detection_confidence=0.5`.
-Use `--face-detection-model-selection 0` for the short-range model, or
-`--min-face-detection-confidence` to change the detector and landmark detector
-threshold. A confidence threshold controls which results are accepted; it does
-not guarantee detection of profiles, occluded faces, or motion-blurred faces.
-See the [MediaPipe API source](https://github.com/google-ai-edge/mediapipe/blob/v0.10.21/mediapipe/python/solutions/face_detection.py).
+The facial pipeline shares `YuNetLocalizer`, `face_crop_box`, and
+`landmark_agreement_error` with `preview_microexpressions.py`. YuNet receives
+BGR frames after optional SPEINet enhancement and searches within `--patient-roi`.
+It uses the cached `checkpoints/pretrained/yunet/face_detection_yunet_2023mar.onnx`
+checkpoint by default, resolved relative to `FYPModels` regardless of the working
+directory. Set `--face-detector-model` for another checkpoint and
+`--face-confidence` for its score threshold (default `0.8`).
 
 Only detections with their centers in `--patient-roi` can start a face track.
 Tracking prefers the nearest face and rejects movement beyond `--max-head-jump`.
 Bounding boxes are padded with `--face-margin`, made square, and clipped to the
-image before landmark extraction. If landmarks are missing, the detected face
-box still supplies the RGB/flow crop. Pose head boxes and limited reuse remain
-fallbacks when face detection fails. Geometry remains zero when landmarks are
-unavailable.
+image before landmark extraction. MediaPipe FaceLandmarker still uses
+`--face-model`, but runs fresh inference in IMAGE mode on every detected crop.
+The mesh's eye centers, nose, and mouth corners must agree with YuNet's five
+anchors within `--max-landmark-error` (default `0.2`, as a fraction of face size)
+before facial geometry is accepted. `--min-face-detection-confidence` and
+`--min-face-presence-confidence` control the landmark stage; the existing
+`--min-face-tracking-confidence` argument is retained for compatibility but
+has no effect in IMAGE mode.
+
+YuNet boxes supply RGB/flow crops even when landmarks are missing or rejected.
+Landmarks never redefine those boxes, and pose detection only supplies pose
+outputs and matches the selected patient. When YuNet misses, bounded box reuse
+is still available; after it expires the face tensor is zero. Geometry is zero
+whenever current landmarks are unavailable or fail agreement. The old MediaPipe
+face detector, pose head fallback, `--face-detection-model-selection`, and
+`--head-margin` have been removed. Output array shapes and manifest columns are
+unchanged.
 
 From `FYPModels`, inspect the selected patient and crop with:
 
@@ -96,13 +108,26 @@ python preprocess/_facial/face_preprocess.py "datasets/Seizure videos of epileps
 Add `--video-enhancement speinet --speinet-device cpu` to restore frames first.
 The ROI above is an initial estimate for this clip; verify it in the preview.
 The preview draws the selected detector result and the final crop box. Its text
-distinguishes face boxes, landmarks, pose fallbacks, and reused boxes. Press
+distinguishes face boxes, accepted landmarks, and reused boxes. YuNet anchors
+and confidence are drawn on the source panel. Press
 `q` or Escape to stop processing and save complete windows processed so far.
 
+Add `--save-preview` to save `OUTPUT/preview.mp4` with the annotated source
+frame and model RGB crop side by side. It works with or without `--preview`,
+including in `--diagnostics-only` mode. The silent MP4 uses the sampled frame
+rate (capped at source FPS); each frame shows its source timestamp. Quitting
+the live preview finalizes the clip with the frames processed so far. Use a
+different output directory to keep earlier clips, since a new run replaces
+`preview.mp4`.
+
 Diagnostics report `face_detector_fraction` separately from
-`face_landmark_fraction` and `pose_head_fallback_fraction`. In training manifests,
-`face_detection_fraction` counts frames with either a selected detector box or
-valid facial geometry; `face_landmark_fraction` continues to count only geometry.
+`face_landmark_fraction`, with per-frame `face_score` and
+`landmark_error_fraction`. In training manifests, `face_detection_fraction`
+counts selected YuNet detections and `face_landmark_fraction` counts accepted
+geometry. The legacy `pose_head_fallback_fraction` column is always zero.
+Run records include the YuNet checkpoint path and SHA-256 hash. The dataset
+preparation and comparison CLIs also accept `--face-detector-model`,
+`--face-confidence`, and `--max-landmark-error`.
 
 ## Test head pose and expression measurements on a video
 
@@ -235,3 +260,83 @@ python -m unittest tests.test_video_enhancement tests.test_preprocessing_compari
 
 See [_speinet/UPSTREAM.md](_speinet/UPSTREAM.md) for attribution and the adapter's
 temporal/spatial differences from the research inference script.
+
+
+## FaceMap features from existing face crops
+
+`_facial/face_feature_extraction.py` accepts crops already produced by
+`preview_microexpressions.py` or `face_preprocess.py`. It does not detect a face,
+choose an ROI, add padding, or crop the frame again. It implements the network,
+128×128 RGB input, and 68-landmark reconstruction from
+[Qualcomm FaceMap 3DMM v0.62.2](https://github.com/qualcomm/ai-hub-models/tree/v0.62.2/src/qai_hub_models/models/facemap_3dmm).
+The existing PyTorch, NumPy, and OpenCV dependencies are sufficient; no AI Hub
+account or `qai_hub_models` installation is needed for local inference.
+
+Create one extractor outside your frame loop and pass each unannotated crop:
+
+```python
+from FYPModels.preprocess._facial.face_feature_extraction import FaceMapFeatureExtractor
+
+extractor = FaceMapFeatureExtractor()  # load the cached model once
+# Inside the existing loop, after cropping and before drawing on crop:
+features = extractor.extract(crop, crop_box=(x1, y1, x2, y2))
+landmarks = features.landmarks_frame  # (68, 2), original-frame pixels
+```
+
+Input defaults to uint8 BGR, as returned by OpenCV. For a crop already converted
+to RGB, pass `color_space="rgb"`. The optional `crop_box` is the exact original
+frame box used to make this crop, in `(x1, y1, x2, y2)` order with exclusive end
+coordinates. It must match the supplied pixels: use the unsmoothed box for the
+landmark crop, or the smoothed box if passing the model RGB crop. After upscaling,
+keep the original-frame box. Omit the box when only crop-local coordinates are
+needed. Full-frame coordinates are then `None`.
+
+Results contain 68 crop-local landmarks, optional original-frame landmarks,
+265 raw parameters, 219 de-normalized identity coefficients, 39 de-normalized
+expression coefficients, and FaceMap pitch/yaw/roll in degrees. The last raw
+output is preserved without treating it as a confidence score. FaceMap's 68-point
+indices and pose convention differ from MediaPipe: do not pass these points to
+`measure_face`, `landmark_agreement_error`, or `_face_geometry`. The existing
+MediaPipe measurements keep their own landmark engine. Model predictions alone
+do not establish landmark validity on an occluded or poorly localized crop.
+
+To test FaceMap on a video, the preview's `--facemap` option feeds its existing
+unannotated YuNet crops into the extractor. From `FYPModels`:
+
+```bash
+MPLCONFIGDIR=/tmp/seizureai-mplconfig .venv-facial/bin/python preprocess/_facial/preview_microexpressions.py \
+  "datasets/Seizure videos of epilepsy patients/Seizure/S1_5_136.mp4" \
+  --output results/facemap_video_S1 \
+  --patient-roi "0.15,0.05,0.45,0.65" \
+  --facemap --preview
+```
+
+Use a new output directory for each run. Omit `--preview` to save without a
+window, or add `--max-duration-seconds 5` for the first five seconds of another
+clip. Press `q` or Escape to stop the live preview and finalize the files.
+Magenta dots are FaceMap's 68 raw predictions; they are not validated by the
+MediaPipe acceptance caption or expression filters. `preview.mp4` contains
+the overlays, `facemap.jsonl` contains one timestamped record per decoded frame
+(null features when there is no crop), and `summary.json` records FaceMap asset
+hashes and counts. The existing `frames.csv` continues to describe MediaPipe
+measurements. Use `--facemap-model-dir` or `--facemap-device` to override the
+cached model location or the default CPU device.
+
+The official checkpoint and reconstruction arrays are cached under
+`checkpoints/pretrained/facemap_3dmm`; `source.json` records URLs and SHA-256 hashes.
+On another checkout, download them from the official asset store (from `FYPModels`):
+
+```bash
+mkdir -p checkpoints/pretrained/facemap_3dmm
+for asset in resnet_wd2_weak_score_1202_3ch.pth.tar meanFace.npy shapeBasis.npy blendShape.npy; do
+  curl -fL "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/facemap_3dmm/v1/$asset" \
+    -o "checkpoints/pretrained/facemap_3dmm/$asset"
+done
+```
+
+For an already-cropped image, save feature JSON with:
+
+```bash
+python preprocess/_facial/face_feature_extraction.py face_crop.png \
+  --output results/facemap/features.json
+```

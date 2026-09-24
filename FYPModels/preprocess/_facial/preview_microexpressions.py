@@ -3,7 +3,8 @@
 Uses independent YuNet face crops and checks refined Face Mesh landmarks against
 the detector's anchors. This is a measurement probe, not an emotion classifier.
 It writes every source timestamp, including rejected frames, and does not change
-the training-window preprocessing pipeline.
+the training-window preprocessing pipeline. Optional --facemap compares FaceMap
+landmarks on the same crops and saves them separately in facemap.jsonl.
 """
 from __future__ import annotations
 
@@ -139,6 +140,11 @@ def main() -> None:
     parser.add_argument("--min-confidence", type=float, default=.5)
     parser.add_argument("--max-duration-seconds", type=float)
     parser.add_argument("--preview", action="store_true", help="Show the annotated video; q or Escape stops the run.")
+    parser.add_argument("--facemap", action="store_true",
+                        help="Run FaceMap on the existing crops; draw magenta landmarks and save facemap.jsonl.")
+    parser.add_argument("--facemap-model-dir", type=Path,
+                        help="Directory containing FaceMap weights and reconstruction arrays; defaults to the project cache.")
+    parser.add_argument("--facemap-device", default="cpu", help="PyTorch device for optional FaceMap inference.")
     args = parser.parse_args()
     try:
         roi = tuple(float(x) for x in args.patient_roi.split(","))
@@ -160,6 +166,18 @@ def main() -> None:
     import mediapipe as mp
 
     localizer = YuNetLocalizer(args.face_detector_model, args.face_confidence)
+    facemap = None
+    facemap_assets = None
+    if args.facemap:
+        from .face_feature_extraction import ASSET_NAMES, DEFAULT_MODEL_DIR, FaceMapFeatureExtractor
+
+        model_dir = args.facemap_model_dir or DEFAULT_MODEL_DIR
+        facemap = FaceMapFeatureExtractor(model_dir, device=args.facemap_device)
+        facemap_assets = {
+            name: {"path": str((model_dir / name).resolve()),
+                   "sha256": hashlib.sha256((model_dir / name).read_bytes()).hexdigest()}
+            for name in ASSET_NAMES
+        }
     counts = Counter()
     with ExitStack() as stack:
         capture, metadata = stack.enter_context(open_video(args.video, cv2=cv2))
@@ -170,6 +188,7 @@ def main() -> None:
             min_detection_confidence=args.min_confidence, min_tracking_confidence=args.min_confidence,
         ))
         args.output.mkdir(parents=True, exist_ok=False)
+        facemap_file = stack.enter_context((args.output / "facemap.jsonl").open("w", encoding="utf-8")) if facemap else None
         csv_file = stack.enter_context((args.output / "frames.csv").open("w", newline="", encoding="utf-8"))
         writer = csv.DictWriter(csv_file, fieldnames=FIELDS)
         writer.writeheader()
@@ -184,6 +203,8 @@ def main() -> None:
             row = dict.fromkeys(FIELDS, None)
             row.update(time_sec=timestamp, face_detected=0, landmarks_found=0, anchor_check_passed=0,
                        accepted=0, reason="no_face_detection")
+            facemap_features = None
+            facemap_box = None
             face = localizer.detect(frame, roi, previous_center)
             if face is not None:
                 previous_center = face.center / np.array([width, height])
@@ -191,6 +212,11 @@ def main() -> None:
                 row.update(zip(("face_x1", "face_y1", "face_x2", "face_y2"), map(float, face.box)))
                 x1, y1, x2, y2 = face_crop_box(face, frame.shape)
                 crop = frame[y1:y2, x1:x2]
+                if facemap is not None:
+                    # Consume the very same unannotated crop, before either
+                    # landmark engine draws onto the frame-backed view.
+                    facemap_box = [int(x1), int(y1), int(x2), int(y2)]
+                    facemap_features = facemap.extract(crop, crop_box=facemap_box)
                 result = mesh.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
                 if result.multi_face_landmarks:
                     landmarks = result.multi_face_landmarks[0]
@@ -207,6 +233,20 @@ def main() -> None:
                             crop, landmarks, mp.solutions.face_mesh.FACEMESH_CONTOURS, None,
                             mp.solutions.drawing_styles.get_default_face_mesh_contours_style(),
                         )
+            if facemap_file is not None:
+                facemap_file.write(json.dumps({
+                    "time_sec": timestamp, "face_detected": face is not None,
+                    "crop_box_xyxy": facemap_box,
+                    "features": facemap_features.as_dict() if facemap_features is not None else None,
+                }, allow_nan=False) + "\n")
+                if facemap_features is not None:
+                    counts["facemap_frames"] += 1
+                    for point in facemap_features.landmarks_frame:
+                        px, py = map(float, point)
+                        # Keep off-frame predictions in JSON, but only draw
+                        # visible coordinates on the annotated video.
+                        if 0 <= px < width and 0 <= py < height:
+                            cv2.circle(frame, (round(px), round(py)), 3, (255, 0, 255), -1)
             color = (0, 200, 0) if row["accepted"] else (0, 165, 255)
             # The broad search region is distinct from the actual detected face.
             rx1, ry1, rx2, ry2 = np.rint(np.array(roi) * [width, height, width, height]).astype(int)
@@ -223,6 +263,9 @@ def main() -> None:
             if row["accepted"]:
                 captions.append(f'L EAR {row["left_ear"]:.3f} | R EAR {row["right_ear"]:.3f} | MAR {row["mar"]:.3f}')
                 captions.append(str(row["eye_state"]))
+            if facemap is not None:
+                captions.append("FaceMap: 68 magenta points (unvalidated)" if facemap_features is not None
+                                else "FaceMap: no face crop")
             for index, caption in enumerate(captions):
                 cv2.putText(frame, caption, (20, 35 + index * 32), cv2.FONT_HERSHEY_SIMPLEX, .7, color, 2, cv2.LINE_AA)
             if video_writer is None:
@@ -249,6 +292,12 @@ def main() -> None:
             "face_detector_sha256": hashlib.sha256(args.face_detector_model.read_bytes()).hexdigest()},
         "note": "Independent face detection and mesh-anchor agreement are heuristic quality checks, not verified accuracy. Approximate camera and generic face model; inspect pose and landmark quality. Eye closure is a per-frame candidate, not a validated blink or emotion. Filtered frames retain timestamps with blank expression measurements.",
     }
+    if facemap is not None:
+        summary["facemap"] = {
+            "features_path": str((args.output / "facemap.jsonl").resolve()),
+            "assets": facemap_assets,
+            "note": "Magenta points are raw FaceMap predictions on the same YuNet crops. MediaPipe acceptance, pose filters, and expression ratios do not validate these 68-point predictions. Missing detections retain timestamps with null features.",
+        }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2, default=str, allow_nan=False) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, default=str))
 

@@ -42,12 +42,7 @@ from ..preprocess_diagnostics import frame_diagnostics, write_diagnostics
 from ..preprocess_options import (
     add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
 )
-from ..video_preprocess import _normalized_pose, _select_patient_pose, _pose_head_center
-from ..prepare_dataset import (
-    patient_split as _patient_split,
-    window_starts as _window_starts,
-    write_rows as _write_rows,
-)
+from ..video_preprocess import _normalized_pose, _select_patient_pose, _square_box, _pose_head_box, _crop_box, _show_preprocessing_preview, extract_video
 # Re-export enhancement helpers to preserve existing face_preprocess imports.
 from ..frame_enhancement import (
     DEFAULT_SR_MODEL_DIR, SR_MODELS, SR_SCALES,
@@ -102,6 +97,25 @@ MANIFEST_FIELDS = (
     "pose_head_fallback_fraction",
     "face_box_reused_fraction",
 )
+
+def _pose_head_center(result: Any, pose_index: int | None) -> tuple[float, float] | None:
+    if pose_index is None or not result.pose_landmarks:
+        return None
+    visible = [
+        point
+        for point in result.pose_landmarks[pose_index][:11]
+        if point.x is not None
+        and point.y is not None
+        and (point.visibility is None or point.visibility >= 0.2)
+        and (point.presence is None or point.presence >= 0.2)
+    ]
+    if not visible:
+        return None
+    return (
+        float(np.mean([point.x for point in visible])),
+        float(np.mean([point.y for point in visible])),
+    )
+
 
 def _square_box(
     center_x: float,
@@ -163,7 +177,6 @@ def _crop_box(image: np.ndarray, box: np.ndarray) -> tuple[np.ndarray, np.ndarra
     y1, y2 = int(np.clip(y1, 0, height - 1)), int(np.clip(y2, 1, height))
     actual = np.asarray([x1, y1, x2, y2], dtype=np.float32)
     return image[y1:y2, x1:x2], actual
-
 
 @dataclass(frozen=True)
 class _DetectedFace:

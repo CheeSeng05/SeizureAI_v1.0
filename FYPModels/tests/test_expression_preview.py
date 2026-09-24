@@ -1,5 +1,11 @@
+import contextlib
+import io
+import json
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -11,6 +17,9 @@ from FYPModels.preprocess._facial.preview_microexpressions import (
 from FYPModels.preprocess._facial.face_localization import (
     LocalizedFace, select_face, face_crop_box, landmark_agreement_error,
 )
+from FYPModels.preprocess._facial import preview_microexpressions as preview
+from FYPModels.preprocess._facial.face_feature_extraction import ASSET_NAMES
+from FYPModels.preprocess.io import VideoMetadata
 
 
 class ExpressionPreviewTests(unittest.TestCase):
@@ -102,6 +111,80 @@ class ExpressionPreviewTests(unittest.TestCase):
         box = face_crop_box(face, (100, 200, 3))
         np.testing.assert_array_equal(box, [0, 0, 78, 78])
         np.testing.assert_array_equal(face.box, [0, 0, 40, 60])
+
+    def test_video_facemap_uses_existing_unannotated_crop_and_records_missing_frames(self):
+        for enabled in (True, False):
+            with self.subTest(facemap=enabled), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source.mp4"
+                source.touch()
+                models = root / "models"
+                models.mkdir()
+                for name in ASSET_NAMES:
+                    (models / name).touch()
+                frame = np.full((100, 200, 3), (10, 80, 160), np.uint8)
+                capture = SimpleNamespace(read=Mock(side_effect=[
+                    (True, frame.copy()), (True, frame.copy()), (False, None),
+                ]))
+                metadata = VideoMetadata(str(source), 5, 2, 200, 100)
+                face = LocalizedFace(np.array([40, 20, 80, 40]), np.zeros((5, 2)), .9)
+                localizer = SimpleNamespace(detect=Mock(side_effect=[face, None]))
+                seen = {}
+
+                def extract(crop, *, crop_box):
+                    seen["facemap_crop"] = crop.copy()
+                    seen["box"] = crop_box
+                    return SimpleNamespace(
+                        landmarks_frame=np.tile([60., 30.], (68, 1)),
+                        as_dict=lambda: {"landmarks_frame": [[60., 30.]] * 68},
+                    )
+
+                def mesh_process(rgb):
+                    seen["mesh_crop"] = rgb.copy()
+                    return SimpleNamespace(multi_face_landmarks=[])
+
+                extractor = SimpleNamespace(extract=Mock(side_effect=extract))
+                mesh = SimpleNamespace(process=Mock(side_effect=mesh_process))
+                mediapipe = SimpleNamespace(solutions=SimpleNamespace(face_mesh=SimpleNamespace(
+                    FaceMesh=Mock(return_value=contextlib.nullcontext(mesh)),
+                )))
+                writer = Mock()
+                writer.isOpened.return_value = True
+                args = ["preview_microexpressions.py", str(source), "--output", str(root / "output"),
+                        "--face-detector-model", str(source)]
+                if enabled:
+                    args += ["--facemap", "--facemap-model-dir", str(models)]
+                with patch("sys.argv", args), patch.dict("sys.modules", {"mediapipe": mediapipe}), \
+                     patch.object(preview, "open_video", return_value=contextlib.nullcontext((capture, metadata))), \
+                     patch.object(preview, "YuNetLocalizer", return_value=localizer), \
+                     patch("FYPModels.preprocess._facial.face_feature_extraction.FaceMapFeatureExtractor",
+                           return_value=extractor) as factory, \
+                     patch.object(cv2, "VideoWriter", return_value=writer), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    preview.main()
+                self.assertEqual(writer.write.call_count, 2)
+                writer.release.assert_called_once_with()
+                mesh.process.assert_called_once()
+                features_path = root / "output/facemap.jsonl"
+                summary = json.loads((root / "output/summary.json").read_text())
+                if enabled:
+                    factory.assert_called_once_with(models, device="cpu")
+                    extractor.extract.assert_called_once()
+                    np.testing.assert_array_equal(seen["facemap_crop"][:, :, ::-1], seen["mesh_crop"])
+                    x1, y1, x2, y2 = face_crop_box(face, frame.shape)
+                    np.testing.assert_array_equal(seen["facemap_crop"], frame[y1:y2, x1:x2])
+                    self.assertEqual(seen["box"], [x1, y1, x2, y2])
+                    rows = [json.loads(line) for line in features_path.read_text().splitlines()]
+                    self.assertEqual([row["time_sec"] for row in rows], [0, .2])
+                    self.assertEqual(len(rows[0]["features"]["landmarks_frame"]), 68)
+                    self.assertIsNone(rows[1]["features"])
+                    self.assertIsNone(rows[1]["crop_box_xyxy"])
+                    self.assertEqual(summary["counts"]["facemap_frames"], 1)
+                    self.assertEqual(len(summary["facemap"]["assets"]), 4)
+                else:
+                    factory.assert_not_called()
+                    self.assertFalse(features_path.exists())
+                    self.assertNotIn("facemap", summary)
 
 
 if __name__ == "__main__":

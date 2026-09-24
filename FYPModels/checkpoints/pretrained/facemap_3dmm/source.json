@@ -1,0 +1,24 @@
+{
+  "model": "facemap_3dmm",
+  "source_tag": "v0.62.2",
+  "source": "https://github.com/qualcomm/ai-hub-models/tree/v0.62.2/src/qai_hub_models/models/facemap_3dmm",
+  "asset_version": 1,
+  "assets": {
+    "blendShape.npy": {
+      "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/facemap_3dmm/v1/blendShape.npy",
+      "sha256": "15476b06029b948048b1b9aa5273983036e5f185ab1667fd68193d4ebe9b829a"
+    },
+    "meanFace.npy": {
+      "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/facemap_3dmm/v1/meanFace.npy",
+      "sha256": "e3208f297372c80878910f1bfb2df703efdc6b2beb437d6ad3cbccf864e1976b"
+    },
+    "resnet_wd2_weak_score_1202_3ch.pth.tar": {
+      "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/facemap_3dmm/v1/resnet_wd2_weak_score_1202_3ch.pth.tar",
+      "sha256": "37f4465278a04e32009cc7f55f4ae4086047d0475f3a95a10cc59c03d0559f97"
+    },
+    "shapeBasis.npy": {
+      "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/facemap_3dmm/v1/shapeBasis.npy",
+      "sha256": "8c037c5615b83369531bc6f6f94d0f7f1b46b36ad41b73002542f9c1be970544"
+    }
+  }
+}

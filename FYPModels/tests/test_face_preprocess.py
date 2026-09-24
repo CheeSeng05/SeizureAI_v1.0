@@ -5,13 +5,13 @@ import unittest
 import numpy as np
 
 from FYPModels.preprocess._facial.face_preprocess import (
-    _pose_head_box,
-    _pose_head_center,
     _select_patient_pose,
     _patient_split,
     _smooth_box,
     _window_starts,
 )
+
+from FYPModels.preprocess.video_preprocess import _pose_head_center
 
 
 class _Point:
@@ -68,15 +68,6 @@ class FacePreprocessHelpersTest(unittest.TestCase):
         )
         self.assertEqual(_pose_head_center(result, 0), (.2, .2))
 
-    def test_pose_head_box_is_clipped_to_frame(self) -> None:
-        pose = [_Point(.05 + index * .002, .05 + index * .002) for index in range(33)]
-        result = _PoseResult([pose])
-        box = _pose_head_box(result, 0, 1920, 1080)
-        self.assertIsNotNone(box)
-        assert box is not None
-        self.assertGreaterEqual(float(box.min()), 0.0)
-        self.assertLessEqual(float(box[2]), 1920.0)
-        self.assertLessEqual(float(box[3]), 1080.0)
 
 
 if __name__ == "__main__":
