@@ -6,12 +6,16 @@ This directory contains the React dashboard, Flask API, PostgreSQL catalog,
 MinIO/S3 storage integration, model orchestration, migrations, tests and Docker
 Compose definition.
 
-Quick start:
+Quick start from PowerShell:
 
-```text
-Copy .env.example to .env
+```powershell
+Copy-Item .env.example .env
 docker compose up --build
 ```
+
+If the prompt is Command Prompt (`cmd.exe`) instead of PowerShell, use
+`copy .env.example .env`. The dashboard accepts EEG `.csv`, `.edf`, and
+Nicolet/Natus `.e` uploads.
 
 Then open http://localhost:8080.
 

@@ -203,9 +203,17 @@ class SeizureModelIntegration:
                         with log_path.open("rb") as captured:
                             captured.seek(max(0, log_path.stat().st_size - 16384))
                             detail = captured.read().decode("utf-8", errors="replace").strip()
+                        safe_detail = next(
+                            (
+                                line.strip()
+                                for line in reversed(detail.splitlines())
+                                if line.strip() and not line.lstrip().startswith(("Traceback", "File \""))
+                            ),
+                            "No diagnostic output was produced.",
+                        )
                         raise RuntimeError(
                             f"Model process exited with status {error.returncode}.\n"
-                            + (detail or "No diagnostic output was produced.")
+                            + safe_detail
                         ) from error
             finally:
                 monitor_stop.set()
@@ -270,7 +278,19 @@ class SeizureModelIntegration:
         data = config.setdefault("data", {})
         data["video"] = str(staged.get("video", project / "__missing_video__"))
         data["video_labels"] = str(staged["labels"]) if "labels" in staged else None
-        data["eeg_csv"] = str(staged.get("eeg", project / "__missing_eeg__"))
+        eeg_path = staged.get("eeg")
+        if eeg_path and eeg_path.suffix.lower() == ".csv":
+            data["eeg_csv"] = str(eeg_path)
+            data["eeg_file"] = None
+            data["eeg_format"] = "csv"
+        elif eeg_path:
+            data["eeg_csv"] = None
+            data["eeg_file"] = str(eeg_path)
+            data["eeg_format"] = "edf" if eeg_path.suffix.lower() == ".edf" else "nicolet_e"
+        else:
+            data["eeg_csv"] = str(project / "__missing_eeg__")
+            data["eeg_file"] = None
+            data["eeg_format"] = None
         # Never carry the sample recording's identity into a catalogued upload.
         # A matching label workbook may identify its own single annotation row.
         if "video" in staged:

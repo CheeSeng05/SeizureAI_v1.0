@@ -487,6 +487,49 @@ def run_eeg_workflow(
     )
     output = root / str(test_cfg.get("output_directory", "results")) / "eeg_only"
     output.mkdir(parents=True, exist_ok=True)
+    if source.eeg_path and Path(source.eeg_path).suffix.lower() in {".edf", ".e"}:
+        try:
+            from .eeg.recording_inference import run_recording_inference
+
+            payload = run_recording_inference(
+                input_path=source.eeg_path,
+                project_root=root,
+                config=config,
+                output_root=output,
+                batch_size=int(eeg_cfg.get("inference_batch_size", 64)),
+            )
+            if payload.get("status") != "completed":
+                error = str(payload.get("error") or "Raw EEG recording inference was blocked.")
+                metrics = _na_metrics(error)
+                return WorkflowResult(
+                    "eeg", "blocked", [], np.array([]), None, None,
+                    metrics, metadata, error,
+                )
+            with (output / "predictions.csv").open(encoding="utf-8-sig", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            probabilities = np.asarray([float(row["probability"]) for row in rows], dtype=float)
+            recording_metadata = payload.get("metadata", {})
+            combined_metadata = {**metadata, **recording_metadata}
+            return WorkflowResult(
+                "eeg", "completed", rows, probabilities, None, None,
+                dict(payload.get("metrics", {})), combined_metadata,
+            )
+        except Exception as exc:
+            metadata = {**metadata, "EEG_model_used": False}
+            metrics = _na_metrics(f"EEG recording inference failed: {exc}")
+            payload = {
+                "status": "blocked", "metadata": metadata, "metrics": metrics,
+                "error": str(exc),
+            }
+            _write_json(output / "metrics.json", payload)
+            _write_csv(output / "predictions.csv", [], [
+                "recording_id", "window_id", "start_sec", "end_sec",
+                "probability", "logit", "predicted_label",
+            ])
+            return WorkflowResult(
+                "eeg", "blocked", [], np.array([]), None, None,
+                metrics, metadata, str(exc),
+            )
     mapping, positive = normalized_label_mapping(config)
     _write_json(
         output / "label_mapping.json",
@@ -826,8 +869,9 @@ def run_test_mode(
     if mode in {"unimodal", "video", "simulated_multimodal"} and video_source:
         results["video"] = run_video_workflow(project_root, config, video_source)
     if mode in {"unimodal", "eeg", "simulated_multimodal"} and eeg_source:
-        mapping, positive = normalized_label_mapping(config)
-        print(f"EEG label mapping: {mapping}; positive/seizure value={positive}")
+        if eeg_source.eeg_path and Path(eeg_source.eeg_path).suffix.lower() == ".csv":
+            mapping, positive = normalized_label_mapping(config)
+            print(f"EEG label mapping: {mapping}; positive/seizure value={positive}")
         results["eeg"] = run_eeg_workflow(project_root, config, eeg_source)
     if mode == "strict_multimodal":
         results["strict_multimodal"] = run_strict_workflow(

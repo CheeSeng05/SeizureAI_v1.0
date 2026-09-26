@@ -206,3 +206,88 @@ def test_video_model_run_can_require_labels_for_development_mode(
         assert "labels" in str(error)
     else:
         raise AssertionError("Development video run should require registered labels")
+
+
+@pytest.mark.parametrize(("filename", "expected_format"), [("recording.edf", "edf"), ("recording.e", "nicolet_e")])
+def test_raw_eeg_uses_general_recording_config(
+    tmp_path, filename, expected_format, settings, migrated_db
+) -> None:
+    _, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    staged = tmp_path / filename
+    staged.write_bytes(b"synthetic")
+    integration = SeizureModelIntegration(settings, storage, factory)
+
+    config = integration._build_config(
+        settings.model_project_path.resolve(), tmp_path / "results", {"eeg": staged.resolve()}
+    )
+
+    assert config["data"]["eeg_file"] == str(staged.resolve())
+    assert config["data"]["eeg_csv"] is None
+    assert config["data"]["eeg_format"] == expected_format
+
+
+def test_csv_eeg_keeps_backward_compatible_config(settings, migrated_db, tmp_path) -> None:
+    _, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    staged = tmp_path / "benchmark.csv"
+    staged.write_text("X1,y\n0,1\n", encoding="utf-8")
+    config = SeizureModelIntegration(settings, storage, factory)._build_config(
+        settings.model_project_path.resolve(), tmp_path / "results", {"eeg": staged.resolve()}
+    )
+
+    assert config["data"]["eeg_csv"] == str(staged.resolve())
+    assert config["data"]["eeg_file"] is None
+    assert config["data"]["eeg_format"] == "csv"
+
+
+def test_managed_raw_eeg_run_routes_to_recording_pipeline(
+    tmp_path, settings, migrated_db, monkeypatch
+) -> None:
+    _, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    source = tmp_path / "recording.e"
+    source.write_bytes(b"synthetic nicolet")
+    source_meta = storage.put_file(source, "datasets/test/source/recording.e")
+    with factory.begin() as session:
+        repo = CatalogRepository(session)
+        repo.dataset("test", name="Test", version=None, description=None, source_url=None, license=None, metadata_json={})
+        patient, _ = repo.patient("test", "p1", metadata_json={})
+        recording, _ = repo.recording(
+            "test", "eeg-raw", patient_id=patient.id, session_id=None, task=None,
+            modality="eeg", duration_sec=None, video_fps=None, start_datetime=None, metadata_json={},
+        )
+        repo.stored_file(
+            "test", "manual/p1/eeg-raw/recording.e", recording_id=recording.id,
+            role="source-data", modality="eeg", storage_backend="local",
+            storage_key="datasets/test/source/recording.e", payload_state="stored",
+            size_bytes=source_meta.size_bytes, sha256=source_meta.sha256,
+            media_type="application/octet-stream", metadata_json={"format": "nicolet-e"},
+        )
+
+    def fake_run(command, cwd, check, stdout, stderr):
+        assert command[command.index("--mode") + 1] == "eeg"
+        config_path = Path(command[command.index("--config") + 1])
+        import yaml
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["data"]["eeg_format"] == "nicolet_e"
+        assert config["data"]["eeg_file"].endswith("eeg.e")
+        output = Path(config["testing"]["output_directory"]) / "eeg_only"
+        output.mkdir(parents=True)
+        (output / "predictions.csv").write_text(
+            "window_id,start_sec,end_sec,probability,predicted_label\nwindow-000001,0,4,0.75,1\n",
+            encoding="utf-8",
+        )
+        (output / "metrics.json").write_text(
+            json.dumps({"status": "completed", "metrics": {"prediction_only": True, "window_count": 1}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr("fyp_data_platform.integrations.seizure_model.subprocess.run", fake_run)
+    result = SeizureModelIntegration(settings, storage, factory).run(
+        "test", "eeg-raw", mode="eeg"
+    )
+
+    assert result.status == "completed"
+    assert "eeg_only/predictions.csv" in {item["relative_path"] for item in result.artifacts}

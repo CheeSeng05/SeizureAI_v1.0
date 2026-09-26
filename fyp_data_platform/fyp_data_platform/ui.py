@@ -30,7 +30,7 @@ from fyp_data_platform.storage.keys import safe_entity, source_key
 
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
-ALLOWED_EEG_EXTENSIONS = {".csv"}
+ALLOWED_EEG_EXTENSIONS = {".csv", ".edf", ".e"}
 ALLOWED_LABEL_EXTENSIONS = {".csv", ".xlsx"}
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
@@ -91,14 +91,30 @@ def _register_video(
     }
 
 
-def _validate_eeg_upload(upload: FileStorage) -> dict[str, Any]:
-    filename = secure_filename(upload.filename or "")
-    if Path(filename).suffix.lower() not in ALLOWED_EEG_EXTENSIONS:
-        raise ValueError("EEG data must be a .csv file.")
+def _validate_eeg_path(path: Path) -> dict[str, Any]:
+    suffix = path.suffix.lower()
+    if suffix not in ALLOWED_EEG_EXTENSIONS:
+        raise ValueError("EEG data must be a .csv, .edf, or .e file.")
+    if suffix != ".csv":
+        from seizure_multimodal.eeg.loaders import load_eeg
+
+        with load_eeg(path) as recording:
+            expected_format = "edf" if suffix == ".edf" else "nicolet-e"
+            if recording.metadata.source_format != expected_format:
+                raise ValueError(
+                    f"EEG {suffix} content does not match the expected {expected_format} format."
+                )
+            return {
+                "format": recording.metadata.source_format,
+                "duration_sec": recording.metadata.duration_sec,
+                "channel_count": len(recording.metadata.channel_names),
+                "sampling_rates": sorted(set(recording.metadata.sampling_rates)),
+                "annotation_count": len(recording.annotations),
+            }
     rows = 0
     labels: set[int] = set()
     try:
-        text = upload.stream.read().decode("utf-8-sig")
+        text = path.read_bytes().decode("utf-8-sig")
         reader = csv.DictReader(StringIO(text))
         expected = [f"X{index}" for index in range(1, 179)]
         columns = reader.fieldnames or []
@@ -124,17 +140,29 @@ def _validate_eeg_upload(upload: FileStorage) -> dict[str, Any]:
         if isinstance(error, ValueError) and str(error).startswith("EEG"):
             raise
         raise ValueError(f"EEG CSV contains invalid numeric data: {error}") from error
-    finally:
-        upload.stream.seek(0)
     if rows == 0:
         raise ValueError("EEG CSV does not contain any data rows.")
-    return {"row_count": rows, "labels": sorted(labels), "feature_count": 178}
+    return {"format": "csv", "row_count": rows, "labels": sorted(labels), "feature_count": 178}
+
+
+def _validate_eeg_upload(upload: FileStorage) -> dict[str, Any]:
+    """Compatibility wrapper used by callers that have not staged the upload yet."""
+    filename = secure_filename(upload.filename or "")
+    if Path(filename).suffix.lower() not in ALLOWED_EEG_EXTENSIONS:
+        raise ValueError("EEG data must be a .csv, .edf, or .e file.")
+    try:
+        with tempfile.TemporaryDirectory(prefix="fyp-ui-eeg-validation-") as directory:
+            temporary = Path(directory) / filename
+            upload.save(temporary)
+            return _validate_eeg_path(temporary)
+    finally:
+        upload.stream.seek(0)
 
 
 def _register_eeg(
     *, settings: Settings, storage: Any, session_factory: Any, upload: FileStorage,
     dataset_id: str, dataset_name: str, patient_id: str, recording_id: str,
-    validation: dict[str, Any],
+    validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     filename = secure_filename(upload.filename or "")
     dataset_id = safe_entity(dataset_id or "ui-recordings")
@@ -146,6 +174,7 @@ def _register_eeg(
     with tempfile.TemporaryDirectory(prefix="fyp-ui-eeg-upload-") as directory:
         temporary = Path(directory) / filename
         upload.save(temporary)
+        validation = validation or _validate_eeg_path(temporary)
         metadata = storage.put_file(temporary, key, sha256=sha256_file(temporary))
     with session_factory.begin() as session:
         repo = CatalogRepository(session)
@@ -157,14 +186,15 @@ def _register_eeg(
         patient, _ = repo.patient(dataset_id, patient_id, metadata_json={"uploaded_via": "web"})
         recording, _ = repo.recording(
             dataset_id, source_recording_id, patient_id=patient.id,
-            session_id=None, task=None, modality="eeg", duration_sec=None,
+            session_id=None, task=None, modality="eeg", duration_sec=validation.get("duration_sec"),
             video_fps=None, start_datetime=None, metadata_json={"uploaded_via": "web"},
         )
         file_row, _ = repo.stored_file(
             dataset_id, relative, recording_id=recording.id, role="source-data",
             modality="eeg", storage_backend=settings.storage_backend,
             storage_key=key, payload_state="stored", size_bytes=metadata.size_bytes,
-            sha256=metadata.sha256, media_type="text/csv",
+            sha256=metadata.sha256,
+            media_type="text/csv" if Path(filename).suffix.lower() == ".csv" else "application/octet-stream",
             metadata_json={"uploaded_via": "web", "original_filename": filename, **validation},
         )
     return {
@@ -335,10 +365,14 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _prediction_windows(storage: Any, row: ModelRun) -> list[dict[str, Any]]:
+def _prediction_windows(
+    storage: Any, row: ModelRun, *preferred_suffixes: str,
+) -> list[dict[str, Any]]:
     artifact = _find_artifact(
-        row, "video_only/predictions.csv", "predictions.csv",
-        "video_only/probability_timeline.csv", "probability_timeline.csv",
+        row, *(preferred_suffixes or (
+            "video_only/predictions.csv", "predictions.csv",
+            "video_only/probability_timeline.csv", "probability_timeline.csv",
+        )),
     )
     if artifact is None:
         return []
@@ -466,6 +500,7 @@ def _source_video(session: Any, row: ModelRun) -> StoredFile | None:
 
 def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
     windows = _prediction_windows(storage, row)
+    eeg_windows = _prediction_windows(storage, row, "eeg_only/predictions.csv")
     summary = _run_summary(row)
     document = _best_metric_document(row)
     body = _metric_body(document)
@@ -491,9 +526,14 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
         # Older labelled runs did not persist predicted_events in metrics. Use
         # their saved prediction windows so they display correctly without a rerun.
         "outcome": _outcome(row, windows),
-        "duration_sec": video_info.get("duration_sec") or max((item["end_sec"] for item in windows), default=None),
+        "duration_sec": (
+            video_info.get("duration_sec")
+            or (document.get("metadata", {}).get("duration_sec") if isinstance(document.get("metadata"), dict) else None)
+            or body.get("duration_sec")
+            or max((item["end_sec"] for item in windows), default=None)
+        ),
         "metrics": body, "workflow_metrics": workflow_metrics,
-        "run": run_info, "windows": windows,
+        "run": run_info, "windows": windows, "eeg_windows": eeg_windows,
         "ground_truth": ground_truth,
         "source_video": (
             {
@@ -718,9 +758,9 @@ def create_app(config_path: str | None = None) -> Any:
         if mode in {"video", "unimodal"} and not files:
             return jsonify({"error": "Choose at least one video file."}), 400
         if mode in {"eeg", "unimodal"} and not (eeg_upload and eeg_upload.filename):
-            return jsonify({"error": "Choose one EEG CSV file."}), 400
+            return jsonify({"error": "Choose one EEG .csv, .edf, or .e file."}), 400
         if mode == "unimodal" and len(files) != 1:
-            return jsonify({"error": "Upload exactly one video with one EEG CSV when running both independently."}), 400
+            return jsonify({"error": "Upload exactly one video with one EEG file when running both independently."}), 400
         try:
             patient_id = safe_entity(request.form.get("patient_id", "local-patient-001"))
             recording_id = str(request.form.get("recording_id", "")).strip()
@@ -745,7 +785,6 @@ def create_app(config_path: str | None = None) -> Any:
                     seizure_id=str(request.form.get("seizure_id", "")).strip(),
                     seizure_type=str(request.form.get("seizure_type", "")).strip(),
                 )
-            eeg_validation = _validate_eeg_upload(eeg_upload) if eeg_upload and eeg_upload.filename else None
             uploaded_videos = [
                 _register_video(
                     settings=settings, storage=storage, session_factory=session_factory, upload=item,
@@ -756,12 +795,12 @@ def create_app(config_path: str | None = None) -> Any:
                 ) for item in files
             ]
             uploaded_eeg = None
-            if eeg_upload and eeg_upload.filename and eeg_validation:
+            if eeg_upload and eeg_upload.filename:
                 uploaded_eeg = _register_eeg(
                     settings=settings, storage=storage, session_factory=session_factory,
                     upload=eeg_upload, dataset_id=request.form.get("dataset_id", "ui-recordings"),
                     dataset_name=request.form.get("dataset_name", "UI uploaded recordings"),
-                    patient_id=patient_id, recording_id=recording_id, validation=eeg_validation,
+                    patient_id=patient_id, recording_id=recording_id,
                 )
             registered_labels = []
             if label_identity and label_upload:

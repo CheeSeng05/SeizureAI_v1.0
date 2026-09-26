@@ -169,3 +169,32 @@ class EEGAdapter:
         clipped = np.clip(probability, 1e-7, 1 - 1e-7)
         logits = np.log(clipped / (1.0 - clipped))
         return EncoderOutput(embedding=embedding, logits=logits, probability=probability).as_dict()
+
+    def predict_probabilities(
+        self,
+        eeg_window: Any,
+        *,
+        input_channel_order: Sequence[str] | None = None,
+        preprocessed: bool = False,
+    ) -> dict[str, np.ndarray]:
+        """Run the frozen classifier once when embeddings are not required."""
+
+        data = np.asarray(eeg_window)
+        if data.ndim == 2:
+            data = data[None, ...]
+        if preprocessed:
+            if data.ndim != 3 or data.shape[1:] != (self.window_samples, self.channels):
+                raise ValueError("Preprocessed EEG must have shape [B, 1024, 18]")
+            model_input = data.astype(np.float32)
+        else:
+            if data.ndim != 3 or data.shape[1:] != (self.channels, self.window_samples):
+                raise ValueError("Raw EEG windows must have shape [B, 18, 1024]")
+            if self.channel_order and tuple(input_channel_order or ()) != self.channel_order:
+                raise ValueError("EEG montage/order does not match the configured checkpoint order")
+            model_input = np.transpose(self.preprocessor.transform(data), (0, 2, 1))
+        probability = np.asarray(self.model(model_input, training=False)).reshape(-1)
+        clipped = np.clip(probability, 1e-7, 1 - 1e-7)
+        return {
+            "probability": probability,
+            "logits": np.log(clipped / (1.0 - clipped)),
+        }

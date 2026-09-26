@@ -57,7 +57,7 @@ def discover_sources(root: str | Path, config: Mapping[str, Any]) -> list[Modali
     )
     eeg = _resolve(
         project_root,
-        data.get("eeg_csv"),
+        data.get("eeg_file") or data.get("eeg_csv"),
         ("Epileptic Seizure Recognition.csv",),
     )
     sources: list[ModalitySource] = []
@@ -97,7 +97,7 @@ def discover_sources(root: str | Path, config: Mapping[str, Any]) -> list[Modali
     if eeg:
         sources.append(
             ModalitySource(
-                source_id="epileptic_seizure_recognition_csv",
+                source_id=("epileptic_seizure_recognition_csv" if eeg.suffix.lower() == ".csv" else "eeg_recording"),
                 has_video=False,
                 has_eeg=True,
                 is_verified_pair=False,
@@ -107,6 +107,8 @@ def discover_sources(root: str | Path, config: Mapping[str, Any]) -> list[Modali
                 pairing_note=(
                     "Static EEG benchmark rows have no patient, recording, or timestamp fields and are "
                     "not paired with Sz2PG."
+                    if eeg.suffix.lower() == ".csv" else
+                    "Raw EEG recording is processed independently and is not paired with video."
                 ),
             )
         )
@@ -136,7 +138,22 @@ def inspection_bundle(root: str | Path, config: Mapping[str, Any]) -> dict[str, 
             if video_source.label_path else None
         )
     if eeg_source and eeg_source.eeg_path:
-        payload["eeg_csv"] = inspect_eeg_csv(eeg_source.eeg_path)
+        eeg_path = Path(eeg_source.eeg_path)
+        if eeg_path.suffix.lower() == ".csv":
+            payload["eeg_csv"] = inspect_eeg_csv(eeg_path)
+        else:
+            from .eeg.loaders import load_eeg
+
+            with load_eeg(eeg_path) as recording:
+                payload["eeg_recording"] = {
+                    "source_format": recording.metadata.source_format,
+                    "duration_sec": recording.metadata.duration_sec,
+                    "channel_count": len(recording.metadata.channel_names),
+                    "sampling_rates": sorted(set(recording.metadata.sampling_rates)),
+                    "signal_units": sorted(set(recording.metadata.signal_units)),
+                    "annotation_count": len(recording.annotations),
+                    "reader": recording.metadata.reader,
+                }
     return payload
 
 

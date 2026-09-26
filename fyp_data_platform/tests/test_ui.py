@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from io import BytesIO
+from types import SimpleNamespace
 
 from openpyxl import Workbook
 import pytest
@@ -171,6 +173,52 @@ def test_upload_rejects_eeg_without_ground_truth(settings, migrated_db, monkeypa
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "EEG CSV must contain the ground-truth column y."
+
+
+@pytest.mark.parametrize(("filename", "source_format"), [("recording.edf", "edf"), ("recording.e", "nicolet-e")])
+def test_upload_accepts_raw_eeg_recordings(
+    filename, source_format, settings, migrated_db, monkeypatch
+) -> None:
+    engine, factory = migrated_db
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: LocalStorage(settings.local_storage_root))
+    recording = SimpleNamespace(
+        metadata=SimpleNamespace(
+            source_format=source_format, duration_sec=8.0,
+            channel_names=("Fp1", "F7"), sampling_rates=(500.0, 500.0),
+        ),
+        annotations=(),
+    )
+    monkeypatch.setattr(
+        "seizure_multimodal.eeg.loaders.load_eeg",
+        lambda _path: nullcontext(recording),
+    )
+
+    response = ui.create_app().test_client().post(
+        "/api/uploads",
+        data={"mode": "eeg", "eeg": (BytesIO(b"synthetic recording"), filename)},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201, response.get_json()
+    assert response.get_json()["eeg"]["validation"]["format"] == source_format
+
+
+def test_upload_rejects_unsupported_eeg_extension(settings, migrated_db, monkeypatch) -> None:
+    engine, factory = migrated_db
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: LocalStorage(settings.local_storage_root))
+
+    response = ui.create_app().test_client().post(
+        "/api/uploads",
+        data={"mode": "eeg", "eeg": (BytesIO(b"not eeg"), "recording.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert ".csv, .edf, or .e" in response.get_json()["error"]
 
 
 def test_both_mode_requires_shared_recording_id(settings, migrated_db, monkeypatch) -> None:

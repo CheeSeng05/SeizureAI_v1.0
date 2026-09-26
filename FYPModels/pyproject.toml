@@ -24,13 +24,19 @@ video = [
   "timm>=0.9",
   "opencv-python-headless>=4.8",
 ]
-eeg = ["tensorflow>=2.15"]
+eeg = [
+  "tensorflow>=2.15",
+  "pyedflib>=0.1.36",
+  "nicolet-e2edf>=0.4.2,<0.5",
+]
 all = [
   "torch>=2.1",
   "torchvision>=0.16",
   "timm>=0.9",
   "opencv-python-headless>=4.8",
   "tensorflow>=2.15",
+  "pyedflib>=0.1.36",
+  "nicolet-e2edf>=0.4.2,<0.5",
 ]
 
 [tool.setuptools.packages.find]

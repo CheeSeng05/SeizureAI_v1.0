@@ -75,16 +75,38 @@ evaluation.
 | VSViG base | present: `VSViG-main/VSViG-base.pth`, 1,283 tensors, SHA-256 `0a95e3e0093730dc535e21a84f04943c73549a2b6a19a85e33aebc7c64f965a9` |
 | Dynamic partition | present: `VSViG-main/dy_point_order.pt` |
 | Custom pose model | present: `VSViG-main/pose.pth`, 250 tensors, SHA-256 `7c61f38c17d4b54d7f429717544be1de0905f901aa6f7913f7868ae5c5b83827` |
-| EEG CNN-LSTM-attention model | **missing**: the notebook names `best_seizure_model.h5`, `seizure_detector_model.h5`, and `seizure_detector.weights.h5`, but none was supplied |
+| EEG CNN-LSTM-attention model | present: `checkpoints/pretrained/eeg/seizure_detector_model.keras`; frozen inference input `[B,1024,18]` |
 
-The EEG adapter fails closed when the original artifact is absent. It never
-initializes, saves, or evaluates random replacement weights.
+The EEG adapter fails closed when the configured artifact is absent. It never
+initializes, saves, or evaluates random replacement weights. The recovered
+Kaggle implementation supplies the exact CHB-MIT montage, physical units,
+256 Hz sampling, four-second windows, and 50% overlap now encoded in the
+inference configuration.
+
+### Clinical `.e` compatibility check (2026-09-26)
+
+One private recording was inspected without copying identifying metadata into
+the repository. It was identified as a directly readable Natus/Nicolet/Nervus
+`.e` container. The adapter exposed 33 dominant-rate physical channels at
+500 Hz from a two-hour recording and read 34 embedded events (31 point events
+and 3 intervals). Raw annotation text remains only in the ignored private
+result directory.
+
+The recording pipeline now resolves modern electrode names first, applies the
+standard T3/T4/T5/T6 fallbacks where needed, constructs the exact 18 bipolar
+channels by physical-µV subtraction, and resamples 500 Hz to 256 Hz with
+polyphase resampling. It preprocesses channels into a disk-backed working
+array and runs model windows in configurable batches, so all windows are never
+held on the GPU at once. No model training, fine-tuning, checkpoint write, or
+annotation-derived model input occurs.
 
 ### Executed result (2026-08-18)
 
 The supplied video was processed end to end on the pretrained VSViG and pose
 checkpoints: 25,080 frames formed 836 complete non-overlapping clips, with one
-trailing frame discarded. No training or fine-tuning occurred.
+trailing frame discarded. No training or fine-tuning occurred. This table is
+the historical August run and predates the recovered EEG checkpoint/montage
+provenance described above.
 
 | Test | Video | EEG | Fusion | Status |
 |---|---:|---:|---:|---|
@@ -216,7 +238,64 @@ Its CSV cross-dataset cell linearly expands each 178-sample row to 1,024 time
 steps, repeats the signal across 18 channels, and globally z-scores the table.
 The implementation reproduces that adaptation in batches and exposes the 32-D
 pre-output embedding, logit, probability, and prediction. It runs only after
-the original `.h5` checkpoint is supplied.
+the original checkpoint is supplied.
+
+### EDF and Natus/Nicolet `.e` recordings
+
+Clinical recording paths are never committed. Set the private root locally,
+or pass one EDF/`.e` file on the command line:
+
+```powershell
+$env:EEG_DATA_ROOT = "C:\path\to\private\eeg_dataset"
+python -m seizure_multimodal eeg-recording-infer `
+  --input "C:\path\to\recording.e" `
+  --config configs/inference.yaml `
+  --root .
+```
+
+Discovery is recursive and does not depend on patient, session, or directory
+names. `load_eeg(path)` selects one of two read-only adapters:
+
+- EDF/EDF+ via PyEDFlib, including embedded EDF+ annotations;
+- structurally verified Natus/Nicolet/Nervus `.e` via `nicolet-e2edf`,
+  including embedded event records and physical waveform samples.
+
+The extension alone is not trusted. Unsupported `.e` files are rejected, and
+files are never renamed to EDF. Both adapters expose the same metadata,
+physical-sample, and annotation interface. Raw events remain separate from
+model inputs and retain their original text; provisional categories do not
+assert that a candidate marker or spike is a confirmed seizure. Zero-duration
+annotations remain point events.
+
+The configured recording transformation is:
+
+```text
+physical µV common-reference electrodes
+→ exact CHB-MIT bipolar A-B derivations
+→ 500 Hz to 256 Hz scipy.signal.resample_poly (when required)
+→ fourth-order 0.5–100 Hz bandpass
+→ 60 Hz notch, Q=30
+→ per-channel z-score and ±5 clipping
+→ four-second/1024-sample windows, two-second stride
+→ [B, 1024, 18]
+→ frozen checkpoint, probability and threshold-0.5 prediction
+```
+
+The order is explicitly `FP1-F7`, `F7-T7`, `T7-P7`, `P7-O1`, `FP1-F3`,
+`F3-C3`, `C3-P3`, `P3-O1`, `FP2-F4`, `F4-C4`, `C4-P4`, `P4-O2`, `FP2-F8`,
+`F8-T8`, `T8-P8`, `P8-O2`, `FZ-CZ`, `CZ-PZ`. Missing components stop the run;
+the loader never invents, duplicates, zero-fills, interpolates, or silently
+substitutes electrodes. Private annotations, compatibility reports, and
+predictions are written under `results/private/<non-identifying-recording-id>/`,
+which is ignored by Git.
+
+Successful execution is experimental compatibility testing, not clinical
+validation. The model was trained on CHB-MIT, not the new clinical source;
+montage reconstruction, resampling, and acquisition-domain differences may
+affect predictions. Clinician event semantics remain unconfirmed and are not
+used as labels. The original notebook also used overlapping windows with a
+random window-level split from a small patient set, creating leakage and
+generalisation concerns; its reported 97% is not an expected accuracy here.
 
 ## Fusion and training
 
@@ -305,9 +384,9 @@ data discovery, missing modalities, strict rejection, simulated acknowledgement
 and pairing, checkpoints, training safeguards, probability/label handling,
 late fusion, embedding shapes, metrics, and result metadata.
 
-The executed run used Python 3.12, PyTorch `2.11.0+cu128`, CUDA runtime 12.8,
-and an NVIDIA GeForce RTX 4070 Laptop GPU. Its checkpoint/integration suite
-passes all 50 tests:
+The executed video run used Python 3.12, PyTorch `2.11.0+cu128`, CUDA runtime
+12.8, and an NVIDIA GeForce RTX 4070 Laptop GPU. The current model suite passes
+70 tests with 7 dependency/data-conditional skips:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v

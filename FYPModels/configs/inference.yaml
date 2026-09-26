@@ -40,6 +40,39 @@ eeg_encoder:
   sampling_rate: 256
   channels: 18
   window_duration_sec: 4
+  window_stride_sec: 2
+  inference_batch_size: 64
+  required_channels:
+    - FP1-F7
+    - F7-T7
+    - T7-P7
+    - P7-O1
+    - FP1-F3
+    - F3-C3
+    - C3-P3
+    - P3-O1
+    - FP2-F4
+    - F4-C4
+    - C4-P4
+    - P4-O2
+    - FP2-F8
+    - F8-T8
+    - T8-P8
+    - P8-O2
+    - FZ-CZ
+    - CZ-PZ
+  channel_aliases:
+    T7: [T3]
+    T8: [T4]
+    P7: [T5]
+    P8: [T6]
+  signal_units: uV
+  montage_reference: CHB-MIT bipolar
+
+eeg_annotations:
+  # Raw text is always preserved. These provisional categories may be
+  # overridden only after clinical/research interpretation is confirmed.
+  overrides: {}
 
 eeg_labels:
   mapping:

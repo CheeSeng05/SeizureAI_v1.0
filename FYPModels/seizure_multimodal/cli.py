@@ -9,6 +9,7 @@ import numpy as np
 from .checkpoints.inspection import inspect_checkpoint_archive, serializable_state_dict_metadata
 from .config import load_config, validate_training_policy
 from .eeg.eeg_adapter import EEGAdapter
+from .eeg.recording_inference import run_first_recording_inference, run_recording_inference
 from .smoke import run_synthetic_smoke_test
 from .synchronization.manifest import read_manifest, validate_manifest
 from .testing import run_test_mode
@@ -59,6 +60,21 @@ def _eeg_inference(args: argparse.Namespace) -> None:
     )
 
 
+def _recording_eeg_inference(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    if args.input:
+        result = run_recording_inference(
+            input_path=args.input, project_root=args.root, config=config,
+            output_root=args.output, batch_size=args.batch_size,
+        )
+    else:
+        result = run_first_recording_inference(
+            dataset_root=args.dataset_root, project_root=args.root, config=config,
+            output_root=args.output, batch_size=args.batch_size,
+        )
+    print(json.dumps(result, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="FYP multimodal seizure integration")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -91,6 +107,20 @@ def main() -> None:
     eeg.add_argument("--checkpoint", required=True)
     eeg.add_argument("--input", required=True)
     eeg.add_argument("--preprocessed", action="store_true")
+
+    recording_eeg = subparsers.add_parser(
+        "eeg-recording-infer",
+        help="Run one compatible EDF or Nicolet .e recording",
+    )
+    recording_eeg.add_argument("--input", help="Specific .edf or .e recording")
+    recording_eeg.add_argument(
+        "--dataset-root",
+        help="Private dataset root; defaults to EEG_DATA_ROOT",
+    )
+    recording_eeg.add_argument("--config", default="configs/inference.yaml")
+    recording_eeg.add_argument("--root", default=".")
+    recording_eeg.add_argument("--output", default="results/private")
+    recording_eeg.add_argument("--batch-size", type=int, default=64)
 
     test = subparsers.add_parser("test", help="Run separated unimodal/strict/simulated testing")
     test.add_argument(
@@ -129,6 +159,8 @@ def main() -> None:
         _video_inference(args)
     elif args.command == "eeg-infer":
         _eeg_inference(args)
+    elif args.command == "eeg-recording-infer":
+        _recording_eeg_inference(args)
     elif args.command == "test":
         config = load_config(args.config)
         config.setdefault("testing", {})["device"] = args.device

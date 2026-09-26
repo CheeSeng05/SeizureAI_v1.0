@@ -149,6 +149,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 .venv312/
@@ -226,6 +228,8 @@ __marimo__/
 /fyp_data_platform/.codex-test-deps/
 
 # FYP local data, generated output, and environments
+/VT 2.2026 ABU SUPIAN IBRAHIM (N623545)/
+/results/private/
 /FYPModels/test_video/
 /FYPModels/results/
 /FYPModels/.venv/

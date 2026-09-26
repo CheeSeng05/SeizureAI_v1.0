@@ -5,7 +5,7 @@ import { Card, Notice, formatBytes } from '../components';
 
 const modes = [
   { id: 'video', title: 'Video', detail: 'Run the video model only.', icon: FileVideo },
-  { id: 'eeg', title: 'EEG', detail: 'Run the EEG model on a labelled CSV.', icon: Activity },
+  { id: 'eeg', title: 'EEG', detail: 'Run the EEG model on CSV data or an EDF/Nicolet recording.', icon: Activity },
   { id: 'unimodal', title: 'Both independently', detail: 'Run video and EEG separately. Results are not fused.', icon: CheckCircle2 },
 ];
 
@@ -43,7 +43,7 @@ export default function UploadPage() {
     {mode === 'unimodal' && <Notice title="Independent results"><p>Both models will run on the same catalog entry, but their predictions will not be combined or presented as fusion.</p></Notice>}
     <div className="upload-inputs">
       {needsVideo && <FileChoice title="Video file" detail="MP4, AVI, MKV or MOV" accept=".mp4,.avi,.mkv,.mov" file={video} inputRef={videoInput} onChoose={setVideo} onRemove={() => setVideo(null)} icon={FileVideo} />}
-      {needsEeg && <FileChoice title="EEG dataset" detail="CSV with X1-X178 and ground-truth column y" accept=".csv" file={eeg} inputRef={eegInput} onChoose={setEeg} onRemove={() => setEeg(null)} icon={FileSpreadsheet} />}
+      {needsEeg && <FileChoice title="EEG recording or dataset" detail="CSV (X1-X178 + y), EDF, or Nicolet .e" accept=".csv,.edf,.e" file={eeg} inputRef={eegInput} onChoose={setEeg} onRemove={() => setEeg(null)} icon={FileSpreadsheet} />}
     </div>
     <Card title="Catalog identity">
       <div className="form-grid">{[['dataset_id', 'Dataset ID'], ['dataset_name', 'Dataset name'], ['patient_id', 'Patient ID'], ['recording_id', `Recording ID${mode === 'unimodal' ? '' : ' (optional)'}`]].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div>

@@ -297,17 +297,33 @@ The supplied `Label.xlsx` contains EEG and clinical onset but no seizure end.
 The transition between those onsets is excluded from classification, and offset
 accuracy remains unavailable; the platform does not invent a missing end time.
 
-### EEG evaluation
+### EEG evaluation and recording prediction
 
-Choose **EEG** and upload one CSV. The file must contain the exact feature
-columns `X1` through `X178` and a ground-truth `y` column. The configured label
-mapping treats `1` as ictal and `2` through `5` as non-ictal. The server validates
-the structure and numeric values before storing the file. Start an **EEG** run
-from Recordings to calculate the EEG predictions and classification metrics.
+Choose **EEG** and upload one `.csv`, `.edf`, or Nicolet/Natus `.e` file.
+Benchmark CSV files must contain the exact feature columns `X1` through `X178`
+and a ground-truth `y` column; that route retains the existing label-backed
+classification metrics. EDF and `.e` files are validated by their recording
+reader and do not require CSV columns or labels.
+
+Raw recordings are converted to the frozen model's exact 18-channel CHB-MIT
+bipolar montage. Common-reference electrodes are subtracted in physical
+microvolts, with standard T3/T4/T5/T6 fallbacks for T7/T8/P7/P8. Signals are
+resampled to 256 Hz, filtered and normalized, then processed as overlapping
+four-second windows with a two-second stride. The result page shows recording
+duration, window count, windows at or above the fixed 0.50 threshold, maximum
+probability, and a downloadable complete probability timeline. Embedded
+clinician events are retained separately and never supplied to the model.
+
+Raw-recording results are experimental compatibility predictions, not a
+clinical diagnosis. The model was trained on CHB-MIT rather than this clinical
+dataset, the montage is reconstructed for common-reference recordings, and
+500 Hz recordings are resampled to 256 Hz. Domain shift and the original
+notebook's overlapping-window/random-window split limit generalisation; the
+reported “97%” must not be treated as expected accuracy on a new recording.
 
 ### Video and EEG independently
 
-Choose **Both independently**, provide one video, one EEG CSV, and a Recording
+Choose **Both independently**, provide one video, one supported EEG file, and a Recording
 ID. Both files are registered under the same catalog entry. Selecting **Both
 independently** on Recordings runs the existing video and EEG models separately
 and displays separate result sections. It does not fuse their predictions and
