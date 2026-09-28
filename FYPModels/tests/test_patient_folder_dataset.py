@@ -14,7 +14,7 @@ from unittest.mock import create_autospec, patch
 import numpy as np
 
 from FYPModels.preprocess import prepare_dataset
-from FYPModels.seizure_multimodal.facial_resnet.train import FaceWindowDataset
+from FYPModels.seizure_multimodal.facial.train import FaceWindowDataset
 
 
 class PatientFolderDatasetTest(unittest.TestCase):

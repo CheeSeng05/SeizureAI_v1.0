@@ -16,7 +16,7 @@ from ..evaluation.classification import binary_classification_metrics
 from ..evaluation.thresholds import select_threshold
 
 if TYPE_CHECKING:
-    from .facial_model import InceptionResnetV1GRUAttention
+    from .facial_model import InceptionResnetV1Attention
 
 
 CLASSES = ("normal", "seizure")
@@ -101,7 +101,7 @@ class FaceWindowDataset(Dataset):
 
 
 def configure_trainable_layers(
-    model: InceptionResnetV1GRUAttention,
+    model: InceptionResnetV1Attention,
 ) -> None:
     # Freeze pretrained InceptionResnetV1.
     for parameter in model.backbone.parameters():
@@ -111,10 +111,8 @@ def configure_trainable_layers(
     for parameter in model.backbone.conv2d_1a.conv.parameters():
         parameter.requires_grad = True
 
-    # GRU, attention, and classifier are trained on the facial dataset.
-    for parameter in model.gru.parameters():
-        parameter.requires_grad = True
-
+    # Positions, attention and classifier are trained on the facial dataset.
+    model.position_embedding.requires_grad = True
     for parameter in model.temporal_attention.parameters():
         parameter.requires_grad = True
 
@@ -125,8 +123,21 @@ def configure_trainable_layers(
         parameter.requires_grad = True
 
 
+def build_optimizer(model: InceptionResnetV1Attention) -> torch.optim.Optimizer:
+    """Include learned frame positions alongside all trainable attention layers."""
+    return torch.optim.AdamW(
+        [
+            {"params": model.backbone.conv2d_1a.conv.parameters(), "lr": 1e-5},
+            {"params": list(model.temporal_attention.parameters())
+             + list(model.attention_norm.parameters()) + [model.position_embedding], "lr": 1e-4},
+            {"params": model.classifier.parameters(), "lr": 1e-4},
+        ],
+        weight_decay=1e-4,
+    )
+
+
 def run_training_epoch(
-    model: InceptionResnetV1GRUAttention,
+    model: InceptionResnetV1Attention,
     loader: DataLoader,
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -161,7 +172,7 @@ def run_training_epoch(
 
 
 def run_evaluation(
-    model: InceptionResnetV1GRUAttention,
+    model: InceptionResnetV1Attention,
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
@@ -197,7 +208,7 @@ def run_evaluation(
 
 def save_checkpoint(
     path: Path,
-    model: InceptionResnetV1GRUAttention,
+    model: InceptionResnetV1Attention,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: dict[str, float | int | None | str],
@@ -207,15 +218,15 @@ def save_checkpoint(
 
     torch.save(
         {
-            "model_name": "InceptionResnetV1GRUAttention",
+            "model_name": "InceptionResnetV1Attention",
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch,
             "classes": CLASSES,
             "num_classes": len(CLASSES),
-            "gru_hidden_size": 256,
-            "bidirectional": True,
             "attention_heads": model.attention_heads,
+            "max_frames": model.max_frames,
+            "dropout": model.dropout,
             "validation_metrics": metrics,
             "probability_threshold": threshold,
         },
@@ -228,13 +239,14 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/fyp/facial/inception_resnet_v1_gru_attention_final.pth",
+        default="checkpoints/fyp/facial/inception_resnet_v1_attention_final.pth",
     )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--attention-heads", type=int, default=8)
+    parser.add_argument("--max-frames", type=int, default=512)
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda", "mps"),
@@ -243,7 +255,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Dataset and device helpers do not need the optional facial backbone.
-    from .facial_model import InceptionResnetV1GRUAttention
+    from .facial_model import InceptionResnetV1Attention
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -276,36 +288,16 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
 
-    model = InceptionResnetV1GRUAttention(
+    model = InceptionResnetV1Attention(
         num_classes=len(CLASSES),
         attention_heads=args.attention_heads,
+        max_frames=args.max_frames,
         pretrained=True,
     ).to(device)
 
     configure_trainable_layers(model)
 
-    optimizer = torch.optim.AdamW(
-        [
-            {
-                "params": model.backbone.conv2d_1a.conv.parameters(),
-                "lr": 1e-5,
-            },
-            {
-                "params": model.gru.parameters(),
-                "lr": 1e-4,
-            },
-            {
-                "params": list(model.temporal_attention.parameters())
-                + list(model.attention_norm.parameters()),
-                "lr": 1e-4,
-            },
-            {
-                "params": model.classifier.parameters(),
-                "lr": 1e-4,
-            },
-        ],
-        weight_decay=1e-4,
-    )
+    optimizer = build_optimizer(model)
 
     criterion = nn.CrossEntropyLoss()
     checkpoint_path = Path(args.checkpoint)

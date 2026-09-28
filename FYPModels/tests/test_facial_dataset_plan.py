@@ -9,7 +9,7 @@ from FYPModels.preprocess.prepare_dataset import (
     stratified_video_plan,
     summarize_plan,
 )
-from seizure_multimodal.facial_resnet.train import resolve_device
+from seizure_multimodal.facial.train import resolve_device
 
 
 class FacialDatasetPlanTest(unittest.TestCase):

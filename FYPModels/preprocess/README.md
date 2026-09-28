@@ -55,6 +55,13 @@ not label every window as seizure, and an unreviewed interval is not a negative
 example. The binary facial trainer rejects usable windows with blank or invalid
 labels. This mode does not read or apply an annotation file yet.
 
+For training without annotations, use the
+[unsupervised facial movement workflow](../seizure_multimodal/facial/README.md).
+It consumes these same manifests and exported face/geometry arrays, ignores
+labels, and returns anomaly scores and candidate intervals for review. Prepare
+both training and validation patients before fitting its threshold; optional
+seizure reference evaluation uses a separate test annotation CSV.
+
 The default `--layout class-folders` retains the existing labelled
 `Normal/*.mp4` and `Seizure/*.mp4` workflow.
 

@@ -6,13 +6,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .facial_model import InceptionResnetV1GRUAttention
+from .facial_model import InceptionResnetV1Attention
 
 
 def load_model(
     checkpoint_path: str | Path,
     device: torch.device,
-) -> tuple[InceptionResnetV1GRUAttention, tuple[str, ...]]:
+) -> tuple[InceptionResnetV1Attention, tuple[str, ...]]:
     checkpoint_path = Path(checkpoint_path)
 
     if not checkpoint_path.is_file():
@@ -39,23 +39,17 @@ def load_model(
     classes = tuple(checkpoint["classes"])
 
     model_name = checkpoint.get("model_name")
-    if model_name != "InceptionResnetV1GRUAttention":
+    if model_name != "InceptionResnetV1Attention":
         raise ValueError(
-            "This inference path requires a InceptionResnetV1GRUAttention checkpoint; "
-            f"found {model_name!r}. Retrain with the VGGFace2 backbone."
+            "This inference path requires a InceptionResnetV1Attention checkpoint; "
+            f"found {model_name!r}. Retrain the attention model; BiGRU checkpoints are incompatible."
         )
 
-    model = InceptionResnetV1GRUAttention(
+    model = InceptionResnetV1Attention(
         num_classes=len(classes),
-        gru_hidden_size=checkpoint.get(
-            "gru_hidden_size",
-            256,
-        ),
-        bidirectional=checkpoint.get(
-            "bidirectional",
-            True,
-        ),
         attention_heads=checkpoint.get("attention_heads", 8),
+        max_frames=checkpoint.get("max_frames", 512),
+        dropout=checkpoint.get("dropout", 0.3),
         pretrained=False,
     )
 
@@ -110,7 +104,7 @@ def load_face_window(
 
 
 def predict_window(
-    model: InceptionResnetV1GRUAttention,
+    model: InceptionResnetV1Attention,
     video: torch.Tensor,
     classes: tuple[str, ...],
     device: torch.device,
@@ -141,7 +135,7 @@ def predict_window(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run InceptionResnetV1-BiGRU-attention inference on one face window"
+        description="Run InceptionResnetV1 multi-head attention inference on one face window"
     )
     parser.add_argument(
         "--input",
