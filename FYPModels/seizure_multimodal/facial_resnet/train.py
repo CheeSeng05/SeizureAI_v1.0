@@ -68,6 +68,13 @@ class FaceWindowDataset(Dataset):
                 f"No usable rows for split={split!r} "
                 f"in {self.manifest_path}"
             )
+        invalid_labels = sum(row.get("label") not in {"0", "1"} for row in self.rows)
+        if invalid_labels:
+            raise ValueError(
+                f"Split {split!r} contains {invalid_labels} unlabelled or invalid windows. "
+                "Supervised training requires annotated labels: 0=non-seizure, 1=seizure. "
+                "Blank labels are unknown, not non-seizure."
+            )
 
     def __len__(self) -> int:
         return len(self.rows)

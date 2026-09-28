@@ -1,10 +1,12 @@
-"""Create a reproducible class-stratified video split and preprocess it."""
+"""Plan and preprocess labelled class folders or unlabelled patient folders."""
 from __future__ import annotations
 
 import argparse
 import csv
 import hashlib
 import json
+import math
+import os
 import random
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -14,11 +16,8 @@ from .frame_enhancement import add_enhancement_arguments, enhancement_kwargs
 from .preprocess_options import add_tuning_arguments, tuning_kwargs, validate_tuning
 from . import add_video_enhancement_arguments, video_enhancement_kwargs
 
-from FYPModels.preprocess.frame_enhancement import (
-    DEFAULT_SR_MODEL_DIR, SR_MODELS, SR_SCALES,
-    _load_sr_model, _sr_model_path, _upscaling, _validate_enhancement,
-    add_enhancement_arguments, enhancement_kwargs,
-)
+VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".mpeg", ".mpg", ".m4v"}
+CHECKPOINT_ROOT = Path(__file__).resolve().parents[1] / "checkpoints/pretrained/mediapipe"
 
 PLAN_FIELDS = (
     "source_video",
@@ -197,6 +196,71 @@ def _closest_patient_subset(
     return set(subsets[best_total])
 
 
+def patient_folder_plan(
+    dataset_root: str | Path,
+    *,
+    train_fraction: float = 0.7,
+    validation_fraction: float = 0.15,
+    seed: int = 42,
+) -> list[dict[str, str]]:
+    """Discover unlabelled videos; each immediate subfolder is one patient.
+
+    Fractions apply to patient counts, without class stratification. IDs derive
+    from relative paths so moving the dataset does not change the split or IDs.
+    Labels stay blank until annotations establish each window's seizure status.
+    """
+    if not 0 < train_fraction < 1 or not 0 < validation_fraction < 1:
+        raise ValueError("train_fraction and validation_fraction must be between 0 and 1")
+    if train_fraction + validation_fraction >= 1:
+        raise ValueError("train_fraction + validation_fraction must be below 1")
+    root = Path(dataset_root).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Dataset directory not found: {root}")
+
+    videos_by_patient: dict[str, list[Path]] = {}
+    for directory, children, files in os.walk(root):
+        children[:] = sorted(name for name in children if not name.startswith("."))
+        for name in sorted(files):
+            path = Path(directory) / name
+            if name.startswith(".") or path.suffix.lower() not in VIDEO_SUFFIXES:
+                continue
+            relative = path.relative_to(root)
+            if len(relative.parts) < 2:
+                raise ValueError("Patient-folder videos must be inside a patient subfolder")
+            videos_by_patient.setdefault(relative.parts[0], []).append(path)
+    if not videos_by_patient:
+        raise FileNotFoundError(f"No supported videos found in patient folders under {root}")
+    patients = sorted(videos_by_patient)
+    if len(patients) < 3:
+        raise ValueError("At least three patient groups are required for train/validation/test")
+    random.Random(seed).shuffle(patients)
+    train_count = max(1, min(round(len(patients) * train_fraction), len(patients) - 2))
+    validation_count = max(1, min(
+        round(len(patients) * validation_fraction), len(patients) - train_count - 1,
+    ))
+
+    rows: list[dict[str, str]] = []
+    for index, patient in enumerate(patients):
+        split = (
+            "train" if index < train_count
+            else "validation" if index < train_count + validation_count
+            else "test"
+        )
+        patient_id = "patient_" + hashlib.sha256(patient.encode()).hexdigest()[:16]
+        for video in sorted(videos_by_patient[patient]):
+            relative = video.relative_to(root).as_posix()
+            recording_id = "recording_" + hashlib.sha256(relative.encode()).hexdigest()[:16]
+            rows.append({
+                "source_video": str(video),
+                "recording_id": recording_id,
+                "patient_id": patient_id,
+                "class_name": "unlabelled",
+                "label": "",
+                "split": split,
+            })
+    return rows
+
+
 def write_plan(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as stream:
@@ -232,6 +296,10 @@ def summarize_plan(rows: list[dict[str, str]]) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True)
+    parser.add_argument(
+        "--layout", choices=("class-folders", "patient-folders"), default="class-folders",
+        help="class-folders: labelled Normal/Seizure MP4s; patient-folders: nested unlabelled videos.",
+    )
     parser.add_argument("--output", default="results/facial_dataset")
     parser.add_argument("--train-fraction", type=float, default=0.7)
     parser.add_argument("--validation-fraction", type=float, default=0.15)
@@ -246,10 +314,6 @@ def main() -> None:
     parser.add_argument("--window-seconds", type=float, default=4.0)
     parser.add_argument("--stride-seconds", type=float, default=2.0)
     parser.add_argument("--face-size", type=int, default=224)
-    parser.add_argument("--face-detector-model", type=Path,
-                        default=Path(__file__).resolve().parents[1] / "checkpoints/pretrained/yunet/face_detection_yunet_2023mar.onnx")
-    parser.add_argument("--face-confidence", type=float, default=.8)
-    parser.add_argument("--max-landmark-error", type=float, default=.2)
     parser.add_argument("--max-poses", type=int, default=4)
     parser.add_argument("--max-head-jump", type=float, default=0.18)
     add_tuning_arguments(parser)
@@ -261,39 +325,61 @@ def main() -> None:
     )
     parser.add_argument(
         "--pose-model",
-        default="checkpoints/pretrained/mediapipe/pose_landmarker_full.task",
+        default=str(CHECKPOINT_ROOT / "pose_landmarker_full.task"),
     )
     parser.add_argument(
         "--face-model",
-        default="checkpoints/pretrained/mediapipe/face_landmarker.task",
+        default=str(CHECKPOINT_ROOT / "face_landmarker.task"),
     )
     parser.add_argument(
         "--plan-only",
         action="store_true",
-        help="Write and summarize the 70/30 assignment without preprocessing videos.",
+        help="Write and summarize the train/validation/test plan without preprocessing videos.",
     )
     parser.add_argument(
         "--limit",
         type=int,
         help="Process only the first N planned videos for an integration smoke test.",
     )
+    parser.add_argument(
+        "--max-duration-seconds", type=float,
+        help="Process at most this many seconds from the start of each selected video.",
+    )
     args = parser.parse_args()
     validate_tuning(tuning_kwargs(args))
+    if args.limit is not None and args.limit <= 0:
+        parser.error("--limit must be positive")
+    if args.max_duration_seconds is not None and (
+        not math.isfinite(args.max_duration_seconds) or args.max_duration_seconds <= 0
+        or args.max_duration_seconds < args.window_seconds
+    ):
+        parser.error("--max-duration-seconds must be finite and at least --window-seconds")
+    if args.layout == "patient-folders" and args.split_unit != "patient":
+        parser.error("--layout patient-folders requires --split-unit patient")
 
     output = Path(args.output).resolve()
-    rows = stratified_video_plan(
-        args.dataset_root,
-        train_fraction=args.train_fraction,
-        validation_fraction=args.validation_fraction,
+    plan_kwargs = dict(
+        train_fraction=args.train_fraction, validation_fraction=args.validation_fraction,
         seed=args.seed,
-        split_unit=args.split_unit,
     )
+    if args.layout == "patient-folders":
+        rows = patient_folder_plan(args.dataset_root, **plan_kwargs)
+    else:
+        rows = stratified_video_plan(args.dataset_root, split_unit=args.split_unit, **plan_kwargs)
+    manifest = output / "video_manifest.csv"
+    if manifest.exists():
+        raise FileExistsError(
+            f"Refusing to mix a new run with existing manifest: {manifest}. "
+            "Choose a new --output directory or move the old results."
+        )
     write_plan(output / "video_split.csv", rows)
     summary = summarize_plan(rows)
     (output / "split_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps(summary, indent=2))
+    if args.layout == "patient-folders":
+        print("Labels are blank: annotate seizure/non-seizure windows before supervised training.")
 
     if args.plan_only:
         return
@@ -304,8 +390,9 @@ def main() -> None:
     # window cannot fit inside any source clip.
     import cv2
 
+    selected = rows[: args.limit] if args.limit is not None else rows
     durations: list[float] = []
-    for row in rows:
+    for row in selected:
         capture = cv2.VideoCapture(row["source_video"])
         source_fps = float(capture.get(cv2.CAP_PROP_FPS))
         frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -317,13 +404,13 @@ def main() -> None:
     )
     if not durations:
         raise ValueError("Could not read duration metadata from any source video")
-    if eligible_videos != len(rows):
+    if eligible_videos != len(selected):
         longest = max(durations, default=0.0)
         shortest = min(durations, default=0.0)
-        too_short = len(rows) - eligible_videos
+        too_short = len(selected) - eligible_videos
         raise ValueError(
             f"--window-seconds={args.window_seconds:g} cannot fit in "
-            f"{too_short} of {len(rows)} source videos (readable duration "
+            f"{too_short} of {len(selected)} source videos (readable duration "
             f"range {shortest:.2f}-{longest:.2f} seconds). Use a window no "
             f"longer than {shortest:.2f} seconds."
         )
@@ -333,14 +420,6 @@ def main() -> None:
         roi_config = json.loads(Path(args.roi_config).read_text(encoding="utf-8"))
         if not isinstance(roi_config, dict):
             raise TypeError("--roi-config must contain a JSON object")
-
-    selected = rows[: args.limit] if args.limit is not None else rows
-    manifest = output / "video_manifest.csv"
-    if manifest.exists():
-        raise FileExistsError(
-            f"Refusing to mix a new run with existing manifest: {manifest}. "
-            "Choose a new --output directory or move the old results."
-        )
 
     for index, row in enumerate(selected, start=1):
         print(
@@ -355,9 +434,6 @@ def main() -> None:
             args.window_seconds,
             pose_model_path=args.pose_model,
             face_model_path=args.face_model,
-            face_detector_model=args.face_detector_model,
-            face_confidence=args.face_confidence,
-            max_landmark_error=args.max_landmark_error,
             stride_seconds=args.stride_seconds,
             patient_id=row["patient_id"],
             label=row["label"],
@@ -367,6 +443,7 @@ def main() -> None:
             patient_roi=tuple(roi_config.get(row["patient_id"], [0, 0, 1, 1])),
             max_poses=args.max_poses,
             max_head_jump=args.max_head_jump,
+            max_duration_seconds=args.max_duration_seconds,
             **tuning_kwargs(args),
             **enhancement_kwargs(args),
             **video_enhancement_kwargs(args),

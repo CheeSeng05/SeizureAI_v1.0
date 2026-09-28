@@ -1,5 +1,65 @@
 # Video Enhancement and Facial Detection
 
+## Unlabelled videos in patient folders
+
+Run these commands from the repository root (`SeizureAI_v1.0`), which contains
+`FYPModels`, with `FYPModels/.venv-facial` activated. Use `--layout patient-folders`
+for datasets such as VT 2026 that do not have `Normal/` and `Seizure/` folders:
+
+```bash
+python -m FYPModels.preprocess.prepare_dataset \
+  --dataset-root "/Volumes/Extreme SSD/VT 2026" \
+  --layout patient-folders \
+  --output FYPModels/results/HUKM_dataset_inventory \
+  --plan-only
+```
+
+Each immediate subfolder is treated as one patient. Discovery searches nested
+folders for AVI, MP4, MOV, MKV, MPEG, MPG and M4V files, including uppercase
+extensions, and skips hidden files/folders. It requires at least three patient
+folders containing videos. Keep recordings from the same patient together in
+one top-level folder. Patient and recording IDs are stable hashes of relative
+paths; source paths are retained in the CSV and can still contain identifying
+information.
+
+`video_split.csv` lists recordings with `class_name=unlabelled` and an empty
+`label`. `split_summary.json` reports patient counts and overlap. Defaults are
+70/15/15 by patient count, rounded with at least one patient per split. Since
+labels are unknown, this split is not class-stratified. `--plan-only` discovers
+files without decoding or preprocessing videos.
+
+For a bounded extraction trial, use a separate output folder:
+
+```bash
+python -m FYPModels.preprocess.prepare_dataset \
+  --dataset-root "/Volumes/Extreme SSD/VT 2026" \
+  --layout patient-folders \
+  --output FYPModels/results/HUKM_dataset_preview \
+  --limit 1 --max-duration-seconds 2 \
+  --window-seconds 1 --stride-seconds 1
+```
+
+The full plan determines splits before `--limit` selects recordings to process.
+Default MediaPipe checkpoint paths resolve relative to `FYPModels`. The batch
+entry point uses the current facial extractor's MediaPipe detection options;
+the obsolete `--face-detector-model`, `--face-confidence` and
+`--max-landmark-error` batch flags have been removed. The extractor preserves
+blank labels in `video_manifest.csv`. Existing manifests are never overwritten.
+Longer extraction runs hold sampled frames in memory, so check storage and
+memory use with a bounded trial before processing full recordings.
+
+Blank means unknown, never non-seizure. Annotate reviewed seizure/non-seizure
+intervals and map them to the corresponding window timestamps before supervised
+training (`0=non-seizure`, `1=seizure`). A seizure somewhere in a recording does
+not label every window as seizure, and an unreviewed interval is not a negative
+example. The binary facial trainer rejects usable windows with blank or invalid
+labels. This mode does not read or apply an annotation file yet.
+
+The default `--layout class-folders` retains the existing labelled
+`Normal/*.mp4` and `Seizure/*.mp4` workflow.
+
+## Video enhancement
+
 This module integrates [yangt1013/SPEINet](https://github.com/yangt1013/SPEINet)
 before facial preprocessing:
 

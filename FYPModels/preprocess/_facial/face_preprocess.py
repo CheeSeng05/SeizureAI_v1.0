@@ -42,7 +42,11 @@ from ..preprocess_diagnostics import frame_diagnostics, write_diagnostics
 from ..preprocess_options import (
     add_tuning_arguments, can_reuse_box, tuning_kwargs, validate_tuning,
 )
-from ..video_preprocess import _normalized_pose, _select_patient_pose, _square_box, _pose_head_box, _crop_box, _show_preprocessing_preview, extract_video
+from ..video_preprocess import _normalized_pose, _select_patient_pose
+from ..prepare_dataset import (
+    patient_split as _patient_split, window_starts as _window_starts,
+    write_rows as _write_rows,
+)
 # Re-export enhancement helpers to preserve existing face_preprocess imports.
 from ..frame_enhancement import (
     DEFAULT_SR_MODEL_DIR, SR_MODELS, SR_SCALES,
