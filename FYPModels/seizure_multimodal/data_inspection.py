@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import struct
 from dataclasses import asdict, dataclass
 from datetime import time
@@ -18,7 +19,7 @@ class MP4VideoMetadata:
     width: int
     height: int
     codec: str
-    variable_frame_rate: bool
+    variable_frame_rate: bool | None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -177,6 +178,46 @@ def inspect_mp4(path: str | Path) -> MP4VideoMetadata:
                 variable_frame_rate=variable,
             )
     raise ValueError(f"No video track found in MP4: {video_path}")
+
+
+def inspect_video(path: str | Path) -> MP4VideoMetadata:
+    """Inspect supported video containers without treating RIFF/Matroska as MP4.
+
+    MP4 retains its exact sample-table timing. Other containers use the same
+    OpenCV backend as inference, with nominal FPS and frame-count duration.
+    Their variable-frame-rate status is unknown, rather than assumed false.
+    """
+    video_path = Path(path).resolve()
+    if video_path.suffix.lower() == ".mp4":
+        return inspect_mp4(video_path)
+    if not video_path.is_file():
+        raise FileNotFoundError(video_path)
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("OpenCV is required to inspect non-MP4 videos") from exc
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            raise ValueError(f"Video cannot be opened; unsupported codec or damaged file: {video_path.name}")
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not math.isfinite(fps) or fps <= 0 or not math.isfinite(count) or count < 1:
+            raise ValueError(f"Video has invalid FPS or frame count: {video_path.name}")
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            raise ValueError(f"Video contains no decodable frames: {video_path.name}")
+        height, width = frame.shape[:2]
+        fourcc = int(capture.get(cv2.CAP_PROP_FOURCC))
+        codec = "".join(chr((fourcc >> (8 * index)) & 0xff) for index in range(4)).rstrip("\x00")
+        frame_count = int(round(count))
+        return MP4VideoMetadata(
+            path=str(video_path), duration_sec=frame_count / fps, fps=fps,
+            frame_count=frame_count, width=width, height=height,
+            codec=codec or "unknown", variable_frame_rate=None,
+        )
+    finally:
+        capture.release()
 
 
 def seconds_from_excel_time(value: Any) -> float | None:

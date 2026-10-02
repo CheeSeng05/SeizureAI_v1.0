@@ -14,6 +14,13 @@ from fyp_data_platform.integrations.seizure_model import SeizureModelIntegration
 from fyp_data_platform.storage.local import LocalStorage
 
 
+@pytest.fixture(autouse=True)
+def isolated_compute_probe(monkeypatch):
+    # These tests replace subprocess.run for model execution; Linux's CPU probe
+    # also invokes subprocess.run and must not accidentally call that fake.
+    monkeypatch.setattr('fyp_data_platform.integrations.seizure_model.compute_info', lambda: {'mode': 'cpu'})
+
+
 def test_model_run_stages_inputs_uploads_results_and_updates_catalog(
     tmp_path: Path, settings, migrated_db, monkeypatch
 ) -> None:

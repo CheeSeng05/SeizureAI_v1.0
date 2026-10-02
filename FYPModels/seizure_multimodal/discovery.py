@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .checkpoints.provenance import sha256_file
-from .data_inspection import inspect_eeg_csv, inspect_interval_label_csv, inspect_label_workbook, inspect_mp4
+from .data_inspection import inspect_eeg_csv, inspect_interval_label_csv, inspect_label_workbook, inspect_video
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ def discover_sources(root: str | Path, config: Mapping[str, Any]) -> list[Modali
         expected_hash = str(provenance.get("expected_sha256", "")).lower()
         actual_hash = sha256_file(video)
         patient_id = provenance.get("patient_id") if expected_hash == actual_hash else None
-        metadata = inspect_mp4(video)
+        metadata = inspect_video(video)
         sources.append(
             ModalitySource(
                 source_id=video.stem,
@@ -122,7 +122,7 @@ def inspection_bundle(root: str | Path, config: Mapping[str, Any]) -> dict[str, 
     video_source = next((source for source in sources if source.has_video), None)
     eeg_source = next((source for source in sources if source.has_eeg), None)
     if video_source and video_source.video_path:
-        payload["video"] = inspect_mp4(video_source.video_path).as_dict()
+        payload["video"] = inspect_video(video_source.video_path).as_dict()
         provenance = config.get("data", {}).get("video_provenance", {})
         provenance = provenance if isinstance(provenance, Mapping) else {}
         actual_hash = sha256_file(video_source.video_path)

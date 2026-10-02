@@ -12,13 +12,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY FYPModels /app/FYPModels
 COPY fyp_data_platform /app/fyp_data_platform
 COPY --from=frontend /build/frontend/dist /app/fyp_data_platform/frontend/dist
 RUN python -m pip install --upgrade pip && \
+    python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
     python -m pip install "/app/fyp_data_platform[ui]" "/app/FYPModels[all]"
 WORKDIR /app/fyp_data_platform
-RUN chmod +x docker/entrypoint.sh
+RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 EXPOSE 8080
 ENTRYPOINT ["docker/entrypoint.sh"]
 

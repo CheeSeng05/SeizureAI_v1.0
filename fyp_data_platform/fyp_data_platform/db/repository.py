@@ -42,6 +42,9 @@ class CatalogRepository:
 
     def patient(self, dataset_id: str, source_patient_id: str, **values: Any) -> tuple[Patient, bool]:
         patient_id = f"{dataset_id}::{source_patient_id}"
+        existing = self.session.get(Patient, patient_id)
+        if existing is not None and 'metadata_json' in values:
+            values['metadata_json'] = {**(existing.metadata_json or {}), **values['metadata_json']}
         return _upsert(
             self.session,
             Patient,

@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from ..data_inspection import inspect_mp4, resolved_interval_label_records, resolved_label_records
+from ..data_inspection import inspect_video, resolved_interval_label_records, resolved_label_records
 from .vsvig_adapter import VSViGAdapter
 from ..progress import report_progress
 from .pose_export import PoseExport
@@ -516,8 +516,8 @@ def predict_video_file(
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("OpenCV is required to decode Sz2PG.mp4") from exc
-    metadata = inspect_mp4(video_path)
+        raise RuntimeError("OpenCV is required to decode video") from exc
+    metadata = inspect_video(video_path)
     annotation = load_video_annotation(
         label_path,
         metadata.duration_sec,

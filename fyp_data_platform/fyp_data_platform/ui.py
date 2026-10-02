@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import json
+from datetime import datetime, timezone
 import mimetypes
 import tempfile
 import threading
@@ -24,9 +26,11 @@ from fyp_data_platform.db.models import Dataset, ModelRun, Patient, Recording, S
 from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.db.session import create_engine_and_session
 from fyp_data_platform.integrations.seizure_model import SeizureModelIntegration
+from fyp_data_platform.integrations.cancellation import ModelRunStopped
 from fyp_data_platform.storage.factory import create_storage
 from fyp_data_platform.storage.integrity import sha256_file
 from fyp_data_platform.storage.keys import safe_entity, source_key
+from fyp_data_platform.video_preview import VideoPreviews
 
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
@@ -469,12 +473,18 @@ def _run_summary(row: ModelRun) -> dict[str, Any]:
     config = row.config_json or {}
     payload = row.metrics_json or {}
     artifacts = _artifacts(row)
+    started = row.started_at
+    ended = row.completed_at or (datetime.now(timezone.utc) if row.status == 'running' else None)
+    elapsed = None
+    if started and ended:
+        elapsed = max(0.0, (ended.replace(tzinfo=ended.tzinfo or timezone.utc) - started.replace(tzinfo=started.tzinfo or timezone.utc)).total_seconds())
     return {
         "id": row.id, "status": row.status, "modality": row.modality,
         "archived": row.archived, "deleting": row.deleting,
         "dataset_id": config.get("dataset_id"), "recording_id": config.get("recording_id"),
         "compute": config.get("compute"),
         "runtime": payload.get("runtime"),
+        "elapsed_sec": elapsed,
         "require_labels": bool(config.get("require_labels")), "artifact_count": len(artifacts),
         "output_prefix": str(artifacts[0].get("key", "")).rsplit("/", 1)[0] if artifacts else None,
         "outcome": _outcome(row), "error": payload.get("error"),
@@ -496,6 +506,23 @@ def _source_video(session: Any, row: ModelRun) -> StoredFile | None:
             StoredFile.modality == "video", StoredFile.payload_state == "stored",
         ).order_by(StoredFile.created_at.desc())
     )
+
+
+def _run_patient(session, row):
+    config = row.config_json or {}
+    recording = session.scalar(select(Recording).where(
+        Recording.dataset_id == config.get('dataset_id'),
+        Recording.source_recording_id == config.get('recording_id'),
+    ))
+    return session.get(Patient, recording.patient_id) if recording else None
+
+
+def _patient_summary(patient):
+    if patient is None:
+        return None
+    profile = (patient.metadata_json or {}).get('profile', {})
+    return {'id': patient.source_patient_id, 'age': profile.get('age'),
+            'notes': profile.get('notes', ''), 'updated_at': profile.get('updated_at')}
 
 
 def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
@@ -523,6 +550,7 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
         }
     return {
         **summary,
+        "patient": _patient_summary(_run_patient(session, row)),
         # Older labelled runs did not persist predicted_events in metrics. Use
         # their saved prediction windows so they display correctly without a rerun.
         "outcome": _outcome(row, windows),
@@ -542,6 +570,7 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
                 "media_type": mimetypes.guess_type(source_video.source_relative_path)[0] or "application/octet-stream",
                 "browser_playable": Path(source_video.source_relative_path).suffix.lower() == ".mp4",
                 "url": f"/api/runs/{row.id}/source-video",
+                "preview_status_url": f"/api/runs/{row.id}/preview",
                 "pose_url": next((f"/api/runs/{row.id}/artifacts/{item['relative_path']}" for item in _artifacts(row) if item.get("relative_path") == "video_only/pose_keypoints.json"), None),
             }
             if source_video else None
@@ -559,13 +588,15 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
 
 def create_app(config_path: str | None = None) -> Any:
     try:
-        from flask import Flask, Response, jsonify, request, send_from_directory
+        from flask import Flask, Response, jsonify, request, send_from_directory, send_file
     except ImportError as error:
         raise RuntimeError("Install the web dependencies with: pip install -e '.[ui]'") from error
     settings = load_settings(config_path)
     engine, session_factory = create_engine_and_session(settings.database_url)
     storage = create_storage(settings)
+    previews = VideoPreviews(settings.work_root, storage)
     jobs: dict[str, dict[str, Any]] = {}
+    cancellations: dict[str, threading.Event] = {}
     jobs_lock = threading.Lock()
     run_lock = threading.Lock()
     app = Flask(__name__, static_folder=None)
@@ -577,7 +608,10 @@ def create_app(config_path: str | None = None) -> Any:
             if not run_lock.acquire(blocking=False):
                 return jsonify({"error": "Processing or another data change is active. Try again when it finishes."}), 409
             try:
-                return handler(*args, **kwargs)
+                with previews.lock:
+                    if previews.busy:
+                        return jsonify({"error": "A video preview is being prepared. Try again when it finishes."}), 409
+                    return handler(*args, **kwargs)
             finally:
                 run_lock.release()
         return guarded
@@ -679,9 +713,44 @@ def create_app(config_path: str | None = None) -> Any:
             if row is None:
                 return jsonify({"error": "Unknown model run."}), 404
             try:
-                return jsonify(_run_result(storage, session, row))
+                result = _run_result(storage, session, row)
+                with jobs_lock:
+                    result['stop_requested'] = any(job.get('run_id') == row.id and job.get('stop_requested') for job in jobs.values())
+                if row.status == 'running':
+                    config = row.config_json or {}
+                    progress_path = settings.work_root / safe_entity(config.get('dataset_id', '')) / safe_entity(config.get('recording_id', '')) / safe_entity(row.id) / 'progress.json'
+                    try:
+                        with progress_path.open(encoding='utf-8') as handle:
+                            progress = json.loads(handle.read(65536))
+                        if isinstance(progress, dict):
+                            result['progress'] = progress
+                    except (OSError, ValueError):
+                        pass
+                return jsonify(result)
             except Exception as error:
                 return jsonify({"error": str(error)}), 500
+
+    @app.get('/api/runs/<run_id>/preview')
+    @app.get('/api/runs/<run_id>/preview-video')
+    def run_preview(run_id):
+        with previews.lock, session_factory() as session:
+            row = session.get(ModelRun, run_id)
+            source = _source_video(session, row) if row else None
+            if not source:
+                return jsonify({'error': 'Source video not found.'}), 404
+            parent = session.get(Recording, source.recording_id)
+            if row.deleting or (parent and parent.deleting):
+                return jsonify({'error': 'Recording deletion is in progress.'}), 409
+            config = row.config_json or {}
+            destination = previews.path(config['dataset_id'], config['recording_id'], source.storage_key, source.sha256)
+            if request.path.endswith('/preview-video'):
+                if not destination.is_file():
+                    return jsonify({'error': 'Preview is not ready.'}), 409
+                response = send_file(destination, mimetype='video/mp4', conditional=True, max_age=3600)
+                response.headers['Cache-Control'] = 'private, max-age=3600'
+                return response
+            state = previews.ensure(destination, source.storage_key)
+            return jsonify({**state, 'url': f'/api/runs/{run_id}/preview-video' if state['status'] == 'ready' else None})
 
     @app.get("/api/runs/<run_id>/source-video")
     def run_source_video(run_id: str) -> Any:
@@ -818,6 +887,27 @@ def create_app(config_path: str | None = None) -> Any:
             "uploaded": [*uploaded_videos, *([uploaded_eeg] if uploaded_eeg else [])],
         }), 201
 
+    @app.patch('/api/runs/<run_id>/patient')
+    def update_patient(run_id):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'error': 'Patient information must be an object.'}), 400
+        age = data.get('age')
+        notes = data.get('notes', '')
+        if age is not None and (type(age) is not int or not 0 <= age <= 130):
+            return jsonify({'error': 'Age must be a whole number from 0 to 130, or blank.'}), 400
+        if not isinstance(notes, str) or len(notes) > 4000:
+            return jsonify({'error': 'Patient notes must be text of at most 4000 characters.'}), 400
+        with session_factory.begin() as session:
+            row = session.get(ModelRun, run_id)
+            patient = _run_patient(session, row) if row else None
+            if patient is None:
+                return jsonify({'error': 'Patient not found for this run.'}), 404
+            patient.metadata_json = {**(patient.metadata_json or {}), 'profile': {
+                'age': age, 'notes': notes.strip(), 'updated_at': datetime.now(timezone.utc).isoformat(),
+            }}
+            return jsonify(_patient_summary(patient))
+
     @app.post("/api/runs")
     def start_run() -> Any:
         data = request.get_json(silent=True) or request.form
@@ -841,7 +931,9 @@ def create_app(config_path: str | None = None) -> Any:
             return jsonify({"error": str(error)}), 409
         job_id = str(uuid.uuid4())
         job_started = time.monotonic()
+        cancel_event = threading.Event()
         with jobs_lock:
+            cancellations[job_id] = cancel_event
             jobs[job_id] = {
                 "id": job_id, "status": "running", "dataset_id": dataset_id,
                 "recording_id": recording_id, "mode": mode,
@@ -852,6 +944,8 @@ def create_app(config_path: str | None = None) -> Any:
             with jobs_lock:
                 current = jobs.get(job_id)
                 if current and current.get("status") == "running":
+                    if payload.get('run_id'):
+                        current['run_id'] = payload['run_id']
                     current["progress"] = {**payload, "elapsed_sec": time.monotonic() - job_started}
 
         def worker() -> None:
@@ -859,12 +953,16 @@ def create_app(config_path: str | None = None) -> Any:
                 result = SeizureModelIntegration(settings, storage, session_factory).run(
                     dataset_id, recording_id, mode=mode, require_labels=require_labels,
                     progress_callback=update_progress,
+                    cancel_event=cancel_event,
                 )
                 with jobs_lock:
                     jobs[job_id] = {
                         "id": job_id, "status": result.status, "result": asdict(result),
-                        "progress": {"stage": "completed", "stage_label": "Run completed", "percent": 100.0, "elapsed_sec": time.monotonic() - job_started},
+                        "progress": {"stage": result.status, "stage_label": "Run stopped" if result.status == 'stopped' else "Run completed", "percent": 0.0 if result.status == 'stopped' else 100.0, "elapsed_sec": time.monotonic() - job_started},
                     }
+            except ModelRunStopped:
+                with jobs_lock:
+                    jobs[job_id] = {'id': job_id, 'status': 'stopped', 'progress': {'stage': 'stopped', 'stage_label': 'Run stopped', 'elapsed_sec': time.monotonic() - job_started}}
             except Exception as error:
                 with jobs_lock:
                     jobs[job_id] = {
@@ -872,6 +970,8 @@ def create_app(config_path: str | None = None) -> Any:
                         "progress": {"stage": "failed", "stage_label": "Run failed", "percent": 0.0, "elapsed_sec": time.monotonic() - job_started},
                     }
             finally:
+                with jobs_lock:
+                    cancellations.pop(job_id, None)
                 run_lock.release()
 
         threading.Thread(target=worker, name=f"model-run-{job_id}", daemon=True).start()
@@ -882,6 +982,21 @@ def create_app(config_path: str | None = None) -> Any:
         with jobs_lock:
             payload = jobs.get(job_id)
         return jsonify(payload) if payload else (jsonify({"error": "Unknown job."}), 404)
+
+    @app.post('/api/jobs/<identity>/stop')
+    @app.post('/api/runs/<identity>/stop')
+    def stop_model(identity):
+        with jobs_lock:
+            job_id = identity if request.path.startswith('/api/jobs/') else next((key for key, value in jobs.items() if value.get('run_id') == identity), None)
+            current = jobs.get(job_id)
+            event = cancellations.get(job_id)
+            if not current or current.get('status') != 'running' or event is None:
+                return jsonify({'error': 'This run is no longer active in this app.'}), 409
+            if current.get('progress', {}).get('stage') == 'artifact_persistence':
+                return jsonify({'error': 'The model has finished and is saving its results. Please wait for completion.'}), 409
+            event.set()
+            current['stop_requested'] = True
+            return jsonify({'status': 'stopping'}), 202
 
     @app.get("/")
     @app.get("/<path:path>")

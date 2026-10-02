@@ -23,7 +23,7 @@ def test_raw_pipeline_exports_processed_frames_only(tmp_path, monkeypatch):
     import numpy as np
     from seizure_multimodal.video import raw_pipeline as raw
     metadata = SimpleNamespace(width=1920,height=1080,fps=25,frame_count=32,duration_sec=1.28,as_dict=lambda: {})
-    monkeypatch.setattr(raw, 'inspect_mp4', lambda _: metadata)
+    monkeypatch.setattr(raw, 'inspect_video', lambda _: metadata)
     class Capture:
         index = 0
         def isOpened(self): return True

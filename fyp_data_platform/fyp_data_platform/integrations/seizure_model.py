@@ -22,6 +22,7 @@ from fyp_data_platform.db.repository import CatalogRepository
 from fyp_data_platform.storage.base import StorageBackend
 from fyp_data_platform.storage.integrity import sha256_file
 from fyp_data_platform.storage.keys import normalize_key, safe_entity
+from .cancellation import ModelRunStopped, check_stop, run_cancellable
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class SeizureModelIntegration:
         require_labels: bool = False,
         cleanup: bool = False,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ModelRunResult:
         total_started = time.perf_counter()
         from fyp_data_platform.lifecycle import require_available
@@ -66,7 +68,7 @@ class SeizureModelIntegration:
         timings: dict[str, float] = {}
         def progress(stage: str, label: str, percent: float, **extra: Any) -> None:
             if progress_callback:
-                progress_callback({"stage": stage, "stage_label": label, "percent": percent, **extra})
+                progress_callback({"stage": stage, "stage_label": label, "percent": percent, "run_id": run_id, **extra})
         if mode not in {"video", "eeg", "unimodal", "strict_multimodal"}:
             raise ValueError("Managed runs support video, eeg, unimodal, or strict_multimodal.")
         project = self.settings.model_project_path.resolve()
@@ -78,6 +80,7 @@ class SeizureModelIntegration:
         input_root = run_root / "inputs"
         output_root = run_root / "results"
         input_root.mkdir(parents=True, exist_ok=True)
+        check_stop(cancel_event)
 
         progress("input_staging", "Preparing input files", 0.0)
         stage_started = time.perf_counter()
@@ -111,11 +114,13 @@ class SeizureModelIntegration:
 
         staged: dict[str, Path] = {}
         for name, key in resolved.items():
+            check_stop(cancel_event)
             if key:
                 destination = input_root / f"{name}{Path(key).suffix}"
                 self.storage.download_file(key, destination)
                 staged[name] = destination.resolve()
         timings["input_staging_sec"] = time.perf_counter() - stage_started
+        check_stop(cancel_event)
         progress("input_staging", "Preparing input files", 100.0)
 
         progress("configuration", "Preparing model configuration", 0.0)
@@ -172,6 +177,7 @@ class SeizureModelIntegration:
             run_compute=run_compute,
         )
         try:
+            check_stop(cancel_event)
             stage_started = time.perf_counter()
             progress("model_loading", "Loading model and input metadata", 0.0)
             monitor_stop = threading.Event()
@@ -197,7 +203,10 @@ class SeizureModelIntegration:
                 log_path = output_root / "pipeline.log"
                 with log_path.open("wb") as log:
                     try:
-                        subprocess.run(command, cwd=project, check=True, stdout=log, stderr=subprocess.STDOUT)
+                        if cancel_event is None:
+                            subprocess.run(command, cwd=project, check=True, stdout=log, stderr=subprocess.STDOUT)
+                        else:
+                            run_cancellable(command, cwd=project, stdout=log, cancel_event=cancel_event)
                     except subprocess.CalledProcessError as error:
                         log.flush()
                         with log_path.open("rb") as captured:
@@ -220,6 +229,7 @@ class SeizureModelIntegration:
                 monitor.join(timeout=2)
             timings["model_pipeline_sec"] = time.perf_counter() - stage_started
             progress("artifact_persistence", "Saving results and metrics", 0.0)
+            check_stop(cancel_event)
             stage_started = time.perf_counter()
             artifacts = self._upload_outputs(dataset_id, recording_id, run_id, output_root)
             metrics = self._collect_metrics(output_root)
@@ -238,6 +248,12 @@ class SeizureModelIntegration:
                 run_id, dataset_id, recording_id, mode, status,
                 self._output_prefix(dataset_id, recording_id, run_id), artifacts, metrics, command, runtime,
             )
+        except ModelRunStopped:
+            timings["total_sec"] = time.perf_counter() - total_started
+            runtime = {"timings": timings, "compute": run_compute}
+            self._finish_run(run_id, 'stopped', {}, [], None, runtime)
+            result = ModelRunResult(run_id, dataset_id, recording_id, mode, 'stopped',
+                                    self._output_prefix(dataset_id, recording_id, run_id), [], {}, command, runtime)
         except Exception as error:
             timings["total_sec"] = time.perf_counter() - total_started
             # Retain the traceback/log and any partial outputs for diagnosis.

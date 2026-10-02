@@ -80,7 +80,11 @@ services:
       retries: 10
 
   s3-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    build:
+      context: ./docker/mc
+      args:
+        MC_VERSION: RELEASE.2025-08-13T08-35-41Z
+    image: fyp-mc:RELEASE.2025-08-13T08-35-41Z
     container_name: fyp-data-minio-init
     depends_on:
       minio:

@@ -25,12 +25,14 @@ export const api = {
   deletionPreview: (kind, id) => request(`/api/manage/${kind}/${encodeURIComponent(id)}`),
   deleteItem: (kind, id, confirmation) => request(`/api/manage/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmation }) }),
   run: (id) => request(`/api/runs/${id}`),
+  updatePatient: (id, patient) => request(`/api/runs/${id}/patient`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patient) }),
   startRun: (datasetId, recordingId, mode = 'video', requireLabels = false) => request('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dataset_id: datasetId, recording_id: recordingId, mode, require_labels: requireLabels }),
   }),
   job: (id) => request(`/api/jobs/${id}`),
+  stopRun: (type, id) => request(`/api/${type === 'job' ? 'jobs' : 'runs'}/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   upload: (mode, files, eeg, fields, labels = null) => {
     const form = new FormData();
     form.append('mode', mode);

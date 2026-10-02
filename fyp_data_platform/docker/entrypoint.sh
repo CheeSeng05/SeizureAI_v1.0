@@ -6,6 +6,7 @@ if [ "${FYP_REQUIRE_CUDA:-0}" = "1" ]; then
 fi
 
 python -m fyp_data_platform db-upgrade
+python -m fyp_data_platform.restart_recovery
 exec gunicorn \
   --bind 0.0.0.0:8080 \
   --workers 1 \

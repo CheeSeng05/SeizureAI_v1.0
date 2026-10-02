@@ -72,6 +72,8 @@ Copy-Item .env.example .env
 
 3. Open `.env` and replace the example PostgreSQL and MinIO passwords. Keep the
    MinIO password identical in `MINIO_ROOT_PASSWORD` and `AWS_SECRET_ACCESS_KEY`.
+   MinIO requires a username of at least 3 characters and a password of at least
+   8 characters.
 4. Build and start everything:
 
 ```powershell
@@ -81,6 +83,12 @@ docker compose up --build
 The first build can take a while because it installs both the video/PyTorch and
 EEG/TensorFlow model dependencies. When `app` is healthy, open
 http://localhost:8080. Database migrations and bucket creation are automatic.
+
+The MinIO server and bucket-setup client are built from pinned upstream source
+releases. This avoids relying on unavailable `minio/mc` container images. If an
+older checkout reports `pull access denied for minio/mc`, use the updated Compose
+file and run `docker compose up --build` again. Docker login is not required for
+these source builds, and no data volumes need to be removed.
 
 ### Windows with an NVIDIA GPU
 
@@ -223,6 +231,21 @@ While a run is active, the Recordings page shows the current pipeline stage,
 processed video clips or EEG batches, percentage, elapsed time and an approximate
 remaining time. Progress uses the existing job polling endpoint and requires no
 additional service or different Docker command.
+The Recordings page restores the active run and its progress when you navigate
+away and return or reload the browser. It checks the server for existing runs,
+retains the last progress during connection failures, and clears it on completion.
+Use **Stop model run** on Recordings or the running result page to cancel an
+active run. The button shows **Stopping…** until the process exits. The run is
+then marked **stopped**, its uploaded inputs are kept, and you can start again.
+Stopping does not resume from the last clip or publish partial predictions as
+completed results. Once the model finishes and starts saving outputs, wait for
+completion instead.
+
+When the Docker app starts, it marks interrupted model runs from its local work
+volume as **stopped** before starting the web server. This prevents an old run
+from remaining **running** after Ctrl+C or a container restart. The exact stop
+time is unknown in this case, so no processing duration is invented. This recovery
+assumes the Compose deployment's single app container and private work volume.
 
 Completed video runs include a synchronized result viewer. The original MP4 is
 streamed from private storage with byte-range requests, detected events can be
@@ -269,8 +292,21 @@ warnings and a plain-language interpretation.
 The **Settings** page provides persistent light, dark or system appearance,
 standard/high contrast, and reduced-motion preferences. Preferences are stored
 only in the current browser and do not change the pipeline or database.
-AVI, MKV and MOV uploads remain stored and downloadable, but browser preview is
-currently guaranteed only for browser-compatible MP4 files.
+AVI, MKV and MOV uploads get an H.264 MP4 viewing copy when the result player
+opens. The page shows preparation status and loads the preview automatically.
+The original stays downloadable and remains the model input. Viewing copies
+omit audio, preserve video timing, support seeking, and are cached in the
+recording's working directory until that recording is permanently deleted.
+MP4 plays directly, with the same preview conversion as a codec fallback.
+Docker includes FFmpeg; non-Docker installations need FFmpeg on PATH.
+Running result pages refresh automatically and show elapsed time and available
+clip progress. Final stage timings, events and skeletons appear after completion;
+an unfinished run is not reported as having zero detected seizures.
+Video inference inspects AVI, MKV and MOV using OpenCV, the same decoder used
+for processing frames. These formats use reported FPS and frame count for
+timing; variable-frame-rate status is unknown. MP4 keeps its sample-table
+timing inspection. Unsupported codecs or damaged files fail validation before
+the models load.
 
 ### Prediction-only video
 
@@ -407,3 +443,10 @@ pnpm run build
 
 For UI development, run Flask on port 8080 and Vite on port 5173. Vite proxies
 `/api` to Flask.
+
+Patient information can be reviewed and edited from a model result page. Patient
+ID is linked from the recording; optional age (years as entered) and relevant
+notes are shared across that patient's recordings within the dataset. New uploads
+preserve saved patient metadata. Missing information is shown as not provided.
+The results page prioritises patient information and detected events/windows;
+evaluation against supplied labels and processing details are collapsed by default.
