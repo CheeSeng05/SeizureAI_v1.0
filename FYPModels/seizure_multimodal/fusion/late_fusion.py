@@ -18,14 +18,15 @@ def sigmoid(logits: Any) -> np.ndarray:
 
 @dataclass(frozen=True)
 class LateFusion:
-    """Unvalidated decision-level fusion for interface/software testing.
+    """Fixed weighted probability-level fusion for synchronized predictions.
 
-    Weights must be fixed a priori until paired validation vEEG exists. They must
-    never be optimized by matching unrelated video and EEG samples by label.
+    Weights must be fixed a priori until patient-disjoint paired validation vEEG
+    exists. They must never be optimized on unrelated pairs or the final test set.
     """
 
-    video_weight: float = 0.5
-    eeg_weight: float = 0.5
+    # Engineering baseline only; these values have not been clinically optimized.
+    video_weight: float = 0.2
+    eeg_weight: float = 0.8
 
     def __post_init__(self) -> None:
         if self.video_weight < 0 or self.eeg_weight < 0:

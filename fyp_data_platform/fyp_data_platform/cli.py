@@ -260,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     model.add_argument("--dataset-id", required=True)
     model.add_argument("--recording-id", required=True)
     model.add_argument(
-        "--mode", choices=["video", "eeg", "unimodal", "strict_multimodal"], default="video"
+        "--mode", choices=["video", "eeg", "unimodal", "fusion", "strict_multimodal"], default="video"
     )
     model.add_argument("--video-key")
     model.add_argument("--labels-key")

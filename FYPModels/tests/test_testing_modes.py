@@ -303,7 +303,7 @@ class ModeSafeguardTests(unittest.TestCase):
             )
             manifest_text = manifest.read_text()
             warning_text = warning.read_text()
-        np.testing.assert_allclose(result.probabilities, [0.3, 0.7])
+        np.testing.assert_allclose(result.probabilities, [0.36, 0.64])
         self.assertEqual(result.rows[0]["sim_window_id"], "sim_window_0001")
         self.assertIn("first N", manifest_text)
         self.assertIn("SIMULATED MULTIMODAL PAIRING", warning_text)

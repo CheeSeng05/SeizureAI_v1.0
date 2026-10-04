@@ -243,6 +243,7 @@ __marimo__/
 /FYPModels/*.mkv
 
 # Raw dataset archives are kept outside Git.
+/*.zip
 /beed_+bangalore+eeg+epilepsy+dataset.zip
 /eeg+eye+state.zip
 /Seizure videos of epilepsy patients

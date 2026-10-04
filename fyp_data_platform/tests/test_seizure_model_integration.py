@@ -298,3 +298,95 @@ def test_managed_raw_eeg_run_routes_to_recording_pipeline(
 
     assert result.status == "completed"
     assert "eeg_only/predictions.csv" in {item["relative_path"] for item in result.artifacts}
+
+
+def test_verified_fusion_run_stages_every_video_segment_and_persists_outputs(
+    tmp_path, settings, migrated_db, monkeypatch,
+) -> None:
+    _, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    sources = {
+        "first.avi": b"first-video",
+        "second.avi": b"second-video",
+        "recording.e": b"synthetic-eeg",
+    }
+    stored = {}
+    for filename, body in sources.items():
+        path = tmp_path / filename
+        path.write_bytes(body)
+        key = f"datasets/test/source/{filename}"
+        stored[filename] = (key, storage.put_file(path, key))
+    with factory.begin() as session:
+        repo = CatalogRepository(session)
+        repo.dataset("test", name="Test", version=None, description=None, source_url=None, license=None, metadata_json={})
+        patient, _ = repo.patient("test", "p1", metadata_json={})
+        recording, _ = repo.recording(
+            "test", "fusion-raw", patient_id=patient.id, session_id=None, task=None,
+            modality="multimodal", duration_sec=60.0, video_fps=None, start_datetime=None,
+            metadata_json={"sync_verified": True, "sync_source": "nicolet_videosyncguid+video_container_duration"},
+        )
+        for filename in ("first.avi", "second.avi", "recording.e"):
+            key, metadata = stored[filename]
+            modality = "eeg" if filename.endswith(".e") else "video"
+            repo.stored_file(
+                "test", f"manual/p1/fusion-raw/{filename}", recording_id=recording.id,
+                role="source-data" if modality == "eeg" else "source-media", modality=modality,
+                storage_backend="local", storage_key=key, payload_state="stored",
+                size_bytes=metadata.size_bytes, sha256=metadata.sha256, media_type=None,
+                metadata_json={"original_filename": filename},
+            )
+
+    def fake_run(command, cwd, check, stdout, stderr):
+        import yaml
+
+        mode = command[command.index("--mode") + 1]
+        assert mode in {"fusion", "video"}
+        config = yaml.safe_load(Path(command[command.index("--config") + 1]).read_text(encoding="utf-8"))
+        assert [Path(value).name for value in config["data"]["video_segments"]] == [
+            "first.avi", "second.avi",
+        ]
+        assert config["data"]["eeg_file"].endswith("eeg.e")
+        assert config["training"] == {"enabled": False}
+        assert config["data"]["video_provenance"] == {
+            "source": "fyp_data_platform synchronized segment catalog",
+            "segment_count": 2,
+        }
+        output = Path(config["testing"]["output_directory"])
+        result_directory = output / ("fusion" if mode == "fusion" else "video_only")
+        result_directory.mkdir(parents=True)
+        (result_directory / "predictions.csv").write_text(
+            "recording_id,window_id,start_sec,end_sec,eeg_probability,video_probability,fused_probability,fused_prediction,video_coverage,video_segment_ids\n"
+            "fusion-raw,window-000001,0,4,0.8,0.4,0.72,1,1.0,segment-0001|segment-0002\n",
+            encoding="utf-8",
+        )
+        (result_directory / "metrics.json").write_text(json.dumps({
+            "status": "completed",
+            "metrics": (
+                {"fusion_method": "weighted_late_fusion", "sync_verified": True,
+                 "eeg_weight": 0.8, "video_weight": 0.2, "feature_fusion_used": False}
+                if mode == "fusion" else
+                {"prediction_only": True, "video_segment_count": 2, "sync_verified": True}
+            ),
+        }), encoding="utf-8")
+
+    monkeypatch.setattr("fyp_data_platform.integrations.seizure_model.subprocess.run", fake_run)
+    result = SeizureModelIntegration(settings, storage, factory).run(
+        "test", "fusion-raw", mode="fusion",
+    )
+
+    assert result.status == "completed"
+    assert {item["relative_path"] for item in result.artifacts} == {
+        "pipeline.log", "fusion/metrics.json", "fusion/predictions.csv",
+    }
+    with factory() as session:
+        run = session.get(ModelRun, result.run_id)
+    assert run is not None and run.modality == "fusion"
+    assert run.config_json["config"]["fusion"]["eeg_weight"] == pytest.approx(0.8)
+
+    video_result = SeizureModelIntegration(settings, storage, factory).run(
+        "test", "fusion-raw", mode="video",
+    )
+    assert video_result.status == "completed"
+    assert {item["relative_path"] for item in video_result.artifacts} == {
+        "pipeline.log", "video_only/metrics.json", "video_only/predictions.csv",
+    }

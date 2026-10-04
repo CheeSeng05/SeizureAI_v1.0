@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import json
 import traceback
 from dataclasses import asdict, dataclass
@@ -17,6 +18,11 @@ from .evaluation.classification import binary_classification_metrics
 from .evaluation.events import TemporalEvent, TemporalWindow, probabilities_to_events
 from .fusion.feature_fusion import FeatureFusionSpec
 from .fusion.late_fusion import LateFusion
+from .synchronization.video_segments import (
+    build_video_segment_manifest,
+    fuse_prediction_timelines,
+    video_rows_on_global_timeline,
+)
 from .video.raw_pipeline import predict_video_file
 
 
@@ -627,12 +633,299 @@ def run_eeg_workflow(
         return WorkflowResult("eeg", "blocked", [], np.array([]), None, None, metrics, metadata, str(exc))
 
 
+def run_video_segments_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult:
+    """Run video-only inference over every segment in a verified multimodal recording."""
+
+    data = config.get("data", {})
+    data = data if isinstance(data, Mapping) else {}
+    raw_videos = data.get("video_segments", ())
+    video_paths = [Path(str(value)).resolve() for value in raw_videos] if isinstance(raw_videos, (list, tuple)) else []
+    eeg_value = data.get("eeg_file")
+    output_root = Path(str(config.get("testing", {}).get("output_directory", "results")))
+    if not output_root.is_absolute():
+        output_root = (root / output_root).resolve()
+    output = output_root / "video_only"
+    output.mkdir(parents=True, exist_ok=True)
+    video_label, _ = _checkpoint_label(root, config.get("video_encoder", {}).get("checkpoint"))
+    eeg_label, _ = _checkpoint_label(root, config.get("eeg_encoder", {}).get("checkpoint"))
+    metadata = result_metadata(
+        test_mode="video_only",
+        video_model_used=False,
+        eeg_model_used=False,
+        fusion_used=False,
+        pairing_type="verified",
+        video_checkpoint=video_label,
+        eeg_checkpoint=eeg_label,
+    )
+    try:
+        if not eeg_value:
+            raise ValueError("Multi-segment video-only inference requires its synchronized .e recording.")
+        if not video_paths:
+            raise ValueError("Multi-segment video-only inference requires at least one video segment.")
+        recording_id = str(data.get("recording_id") or "multimodal-recording")
+        manifest = build_video_segment_manifest(
+            eeg_path=Path(str(eeg_value)), video_paths=video_paths, recording_id=recording_id,
+        )
+        _write_json(output / "video_segment_manifest.json", {
+            "recording_id": recording_id,
+            "sync_verified": True,
+            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "segments": [item.public_dict() for item in manifest],
+        })
+        global_rows: list[dict[str, Any]] = []
+        probabilities: list[float] = []
+        for segment in manifest:
+            segment_config = copy.deepcopy(dict(config))
+            segment_config.setdefault("testing", {})["output_directory"] = str(
+                output_root / "video_segments" / segment.segment_id
+            )
+            source = ModalitySource(
+                source_id=segment.segment_id,
+                has_video=True,
+                has_eeg=False,
+                is_verified_pair=True,
+                video_path=segment.video_path,
+                patient_id=str(data.get("patient_id") or "verified-patient"),
+                recording_id=recording_id,
+                start_sec=segment.global_start_sec,
+                end_sec=segment.global_end_sec,
+                pairing_note="Verified by Nicolet VIDEOSYNCGUID metadata.",
+            )
+            result = run_video_workflow(root, segment_config, source)
+            if result.status != "completed":
+                raise RuntimeError(result.error or f"Video inference did not complete for {segment.segment_id}.")
+            mapped = video_rows_on_global_timeline(result.rows, segment, recording_id=recording_id)
+            global_rows.extend(mapped)
+            probabilities.extend(float(row["video_probability"]) for row in mapped)
+        global_rows.sort(key=lambda row: (float(row["start_sec"]), float(row["end_sec"])))
+        fields = list(global_rows[0]) if global_rows else [
+            "recording_id", "video_segment_id", "local_start_sec", "local_end_sec",
+            "start_sec", "end_sec", "video_probability", "video_prediction",
+        ]
+        _write_csv(output / "predictions.csv", global_rows, fields)
+        _write_csv(output / "probability_timeline.csv", global_rows, fields)
+        values = np.asarray(probabilities, dtype=float)
+        metrics = {
+            "prediction_only": True,
+            "video_segment_count": len(manifest),
+            "window_count": len(global_rows),
+            "probability_min": float(values.min()) if len(values) else None,
+            "probability_max": float(values.max()) if len(values) else None,
+            "duration_sec": max(item.global_end_sec for item in manifest),
+            "sync_verified": True,
+            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "training_performed": False,
+            "fusion_used": False,
+        }
+        completed_metadata = {**metadata, "video_model_used": True, "sync_verified": True}
+        _write_json(output / "metrics.json", {
+            "status": "completed", "metadata": completed_metadata, "metrics": metrics,
+            "run": {"duration_sec": metrics["duration_sec"], "video_segment_count": len(manifest)},
+        })
+        return WorkflowResult(
+            "video", "completed", global_rows, values, None, None, metrics, completed_metadata,
+        )
+    except Exception as exc:
+        blocked_metadata = {**metadata, "video_model_used": False}
+        metrics = _na_metrics(f"Multi-segment video inference failed: {exc}")
+        _write_json(output / "metrics.json", {
+            "status": "blocked", "metadata": blocked_metadata, "metrics": metrics,
+            "error": str(exc), "traceback": traceback.format_exc(),
+        })
+        _write_csv(output / "predictions.csv", [], [
+            "recording_id", "video_segment_id", "local_start_sec", "local_end_sec",
+            "start_sec", "end_sec", "video_probability", "video_prediction",
+        ])
+        return WorkflowResult(
+            "video", "blocked", [], np.array([]), None, None,
+            metrics, blocked_metadata, str(exc),
+        )
+
+
+def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult:
+    data = config.get("data", {})
+    data = data if isinstance(data, Mapping) else {}
+    raw_videos = data.get("video_segments", ())
+    video_paths = [Path(str(value)).resolve() for value in raw_videos] if isinstance(raw_videos, (list, tuple)) else []
+    eeg_value = data.get("eeg_file")
+    output_root = Path(str(config.get("testing", {}).get("output_directory", "results")))
+    if not output_root.is_absolute():
+        output_root = (root / output_root).resolve()
+    output = output_root / "fusion"
+    output.mkdir(parents=True, exist_ok=True)
+    video_label, _ = _checkpoint_label(root, config.get("video_encoder", {}).get("checkpoint"))
+    eeg_label, _ = _checkpoint_label(root, config.get("eeg_encoder", {}).get("checkpoint"))
+    metadata = result_metadata(
+        test_mode="fusion",
+        video_model_used=False,
+        eeg_model_used=False,
+        fusion_used=False,
+        pairing_type="verified",
+        video_checkpoint=video_label,
+        eeg_checkpoint=eeg_label,
+    )
+    try:
+        if not eeg_value:
+            raise ValueError("Multimodal fusion requires one EEG recording.")
+        if not video_paths:
+            raise ValueError("Multimodal fusion requires at least one video segment.")
+        recording_id = str(data.get("recording_id") or "multimodal-recording")
+        manifest = build_video_segment_manifest(
+            eeg_path=Path(str(eeg_value)),
+            video_paths=video_paths,
+            recording_id=recording_id,
+        )
+        _write_json(output / "video_segment_manifest.json", {
+            "recording_id": recording_id,
+            "sync_verified": True,
+            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "segments": [item.public_dict() for item in manifest],
+        })
+
+        eeg_source = ModalitySource(
+            source_id=recording_id,
+            has_video=False,
+            has_eeg=True,
+            is_verified_pair=True,
+            eeg_path=str(eeg_value),
+            recording_id=recording_id,
+            pairing_note="Verified by Nicolet VIDEOSYNCGUID metadata.",
+        )
+        eeg = run_eeg_workflow(root, config, eeg_source)
+        if eeg.status != "completed":
+            raise RuntimeError(eeg.error or "EEG inference did not complete.")
+
+        global_video_rows: list[dict[str, Any]] = []
+        for segment in manifest:
+            segment_config = copy.deepcopy(dict(config))
+            segment_config.setdefault("testing", {})["output_directory"] = str(
+                output / "video_segments" / segment.segment_id
+            )
+            segment_source = ModalitySource(
+                source_id=segment.segment_id,
+                has_video=True,
+                has_eeg=False,
+                is_verified_pair=True,
+                video_path=segment.video_path,
+                patient_id=str(data.get("patient_id") or "verified-patient"),
+                recording_id=recording_id,
+                start_sec=segment.global_start_sec,
+                end_sec=segment.global_end_sec,
+                pairing_note="Verified by Nicolet VIDEOSYNCGUID metadata.",
+            )
+            video = run_video_workflow(root, segment_config, segment_source)
+            if video.status != "completed":
+                raise RuntimeError(video.error or f"Video inference did not complete for {segment.segment_id}.")
+            global_video_rows.extend(
+                video_rows_on_global_timeline(video.rows, segment, recording_id=recording_id)
+            )
+
+        global_video_rows.sort(key=lambda row: (float(row["start_sec"]), float(row["end_sec"])))
+        video_fields = list(global_video_rows[0]) if global_video_rows else [
+            "recording_id", "video_segment_id", "local_start_sec", "local_end_sec",
+            "start_sec", "end_sec", "video_probability", "video_prediction",
+        ]
+        _write_csv(output / "video_timeline.csv", global_video_rows, video_fields)
+        fused_rows = fuse_prediction_timelines(
+            eeg_rows=eeg.rows,
+            video_rows=global_video_rows,
+            recording_id=recording_id,
+            config=config,
+        )
+        fusion_fields = [
+            "recording_id", "window_id", "start_sec", "end_sec",
+            "eeg_probability", "video_probability", "fused_probability",
+            "eeg_prediction", "video_prediction", "fused_prediction",
+            "fusion_available", "video_coverage", "video_segment_ids", "video_window_ids",
+            "eeg_weight", "video_weight", "fusion_threshold",
+        ]
+        _write_csv(output / "predictions.csv", fused_rows, fusion_fields)
+        available = [row for row in fused_rows if row["fusion_available"]]
+        if not available:
+            raise RuntimeError("No EEG windows have the required synchronized video coverage.")
+        fused_probabilities = np.asarray([row["fused_probability"] for row in available], dtype=float)
+        video_probabilities = np.asarray([row["video_probability"] for row in available], dtype=float)
+        eeg_probabilities = np.asarray([row["eeg_probability"] for row in available], dtype=float)
+        threshold = float(available[0]["fusion_threshold"])
+        metrics = {
+            "prediction_only": True,
+            "fusion_method": "weighted_late_fusion",
+            "sync_verified": True,
+            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "eeg_weight": float(available[0]["eeg_weight"]),
+            "video_weight": float(available[0]["video_weight"]),
+            "fusion_threshold": threshold,
+            "total_eeg_windows": len(fused_rows),
+            "fusion_eligible_windows": len(available),
+            "missing_video_windows": len(fused_rows) - len(available),
+            "fused_positive_windows": int(np.count_nonzero(fused_probabilities >= threshold)),
+            "eeg_probability_min": float(eeg_probabilities.min()),
+            "eeg_probability_max": float(eeg_probabilities.max()),
+            "video_probability_min": float(video_probabilities.min()),
+            "video_probability_max": float(video_probabilities.max()),
+            "fused_probability_min": float(fused_probabilities.min()),
+            "fused_probability_max": float(fused_probabilities.max()),
+            "video_timeline_start_sec": min(item.global_start_sec for item in manifest),
+            "video_timeline_end_sec": max(item.global_end_sec for item in manifest),
+            "video_segment_count": len(manifest),
+            "training_performed": False,
+            "feature_fusion_used": False,
+        }
+        completed_metadata = {
+            **metadata,
+            "video_model_used": True,
+            "EEG_model_used": True,
+            "fusion_used": True,
+            "sync_verified": True,
+            "sync_source": metrics["sync_source"],
+        }
+        payload = {
+            "status": "completed",
+            "metadata": completed_metadata,
+            "metrics": metrics,
+            "fusion": {
+                "method": "weighted_late_fusion",
+                "timeline": "eeg",
+                "alignment": "overlap_weighted_mean",
+                "weights_clinically_optimized": False,
+                "feature_fusion_used": False,
+            },
+        }
+        _write_json(output / "metrics.json", payload)
+        return WorkflowResult(
+            "fusion", "completed", fused_rows, fused_probabilities, None, None,
+            metrics, completed_metadata,
+        )
+    except Exception as exc:
+        blocked_metadata = {**metadata, "pairing_type": "unverified", "fusion_used": False}
+        metrics = _na_metrics(f"Multimodal fusion unavailable: {exc}")
+        payload = {
+            "status": "blocked", "metadata": blocked_metadata, "metrics": metrics,
+            "error": str(exc), "traceback": traceback.format_exc(),
+        }
+        _write_json(output / "metrics.json", payload)
+        if not (output / "predictions.csv").exists():
+            _write_csv(output / "predictions.csv", [], [
+                "recording_id", "window_id", "start_sec", "end_sec",
+                "eeg_probability", "video_probability", "fused_probability",
+                "eeg_prediction", "video_prediction", "fused_prediction",
+                "fusion_available", "video_coverage", "video_segment_ids", "video_window_ids",
+            ])
+        return WorkflowResult(
+            "fusion", "blocked", [], np.array([]), None, None,
+            metrics, blocked_metadata, str(exc),
+        )
+
+
 def run_strict_workflow(
     root: Path,
     config: Mapping[str, Any],
     video_source: ModalitySource | None,
     eeg_source: ModalitySource | None,
 ) -> WorkflowResult:
+    data = config.get("data", {})
+    if isinstance(data, Mapping) and data.get("video_segments") and data.get("eeg_file"):
+        return run_fusion_workflow(root, config)
     output = root / str(config.get("testing", {}).get("output_directory", "results")) / "strict_multimodal"
     output.mkdir(parents=True, exist_ok=True)
     video_label, _ = _checkpoint_label(root, config.get("video_encoder", {}).get("checkpoint"))
@@ -717,8 +1010,8 @@ def run_simulated_workflow(
     video_probability = video.probabilities[:count]
     eeg_probability = eeg.probabilities[:count]
     fused = LateFusion(
-        video_weight=float(config.get("fusion", {}).get("late_video_weight", 0.5)),
-        eeg_weight=float(config.get("fusion", {}).get("late_eeg_weight", 0.5)),
+        video_weight=float(config.get("fusion", {}).get("video_weight", config.get("fusion", {}).get("late_video_weight", 0.2))),
+        eeg_weight=float(config.get("fusion", {}).get("eeg_weight", config.get("fusion", {}).get("late_eeg_weight", 0.8))),
     ).predict(video_probability=video_probability, eeg_probability=eeg_probability)
     rows = []
     manifests = []
@@ -804,6 +1097,7 @@ def write_summary(root: Path, config: Mapping[str, Any]) -> None:
     definitions = (
         ("Sz2PG video-only", "video_only"),
         ("EEG CSV only", "eeg_only"),
+        ("Verified late fusion", "fusion"),
         ("Strict multimodal", "strict_multimodal"),
         ("Simulated multimodal", "simulated_multimodal"),
     )
@@ -866,7 +1160,11 @@ def run_test_mode(
     results_root = project_root / str(config.get("testing", {}).get("output_directory", "results"))
     _write_json(results_root / "data_inspection.json", inspection_bundle(project_root, config))
     results: dict[str, WorkflowResult] = {}
-    if mode in {"unimodal", "video", "simulated_multimodal"} and video_source:
+    data = config.get("data", {})
+    has_video_segments = isinstance(data, Mapping) and bool(data.get("video_segments"))
+    if mode == "video" and has_video_segments:
+        results["video"] = run_video_segments_workflow(project_root, config)
+    elif mode in {"unimodal", "video", "simulated_multimodal"} and video_source:
         results["video"] = run_video_workflow(project_root, config, video_source)
     if mode in {"unimodal", "eeg", "simulated_multimodal"} and eeg_source:
         if eeg_source.eeg_path and Path(eeg_source.eeg_path).suffix.lower() == ".csv":
@@ -877,6 +1175,8 @@ def run_test_mode(
         results["strict_multimodal"] = run_strict_workflow(
             project_root, config, video_source, eeg_source
         )
+    if mode == "fusion":
+        results["fusion"] = run_fusion_workflow(project_root, config)
     if mode == "simulated_multimodal":
         if "video" not in results:
             results["video"] = WorkflowResult(
@@ -895,7 +1195,7 @@ def run_test_mode(
             calculate_artificial_metrics=calculate_artificial_metrics,
             reference_labels=reference_labels,
         )
-    if mode not in {"unimodal", "video", "eeg", "strict_multimodal", "simulated_multimodal"}:
+    if mode not in {"unimodal", "video", "eeg", "fusion", "strict_multimodal", "simulated_multimodal"}:
         raise ValueError(f"Unsupported test mode: {mode}")
     write_summary(project_root, config)
     return results

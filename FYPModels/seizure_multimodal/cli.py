@@ -125,7 +125,7 @@ def main() -> None:
     test = subparsers.add_parser("test", help="Run separated unimodal/strict/simulated testing")
     test.add_argument(
         "--mode",
-        choices=("unimodal", "video", "eeg", "strict_multimodal", "simulated_multimodal"),
+        choices=("unimodal", "video", "eeg", "fusion", "strict_multimodal", "simulated_multimodal"),
         default="unimodal",
     )
     test.add_argument("--config", default="configs/inference.yaml")

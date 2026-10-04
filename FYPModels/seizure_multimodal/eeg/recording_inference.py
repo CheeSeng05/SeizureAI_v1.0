@@ -268,7 +268,7 @@ def _source_sample_count(recording: EEGRecording, source_rate: float) -> int:
 
 def _read_output_channel(
     recording: EEGRecording, plan: BipolarMontagePlan, output_index: int,
-    sample_count: int, target_unit: str,
+    sample_count: int, target_unit: str, *, start_sample: int = 0,
 ) -> np.ndarray:
     direct = plan.direct_indices[output_index]
     pair = plan.source_pairs[output_index]
@@ -276,12 +276,55 @@ def _read_output_channel(
     if not indices:
         raise RuntimeError("Invalid bipolar montage plan.")
     physical = recording.read_samples(
-        channel_indices=indices, start_sample=0, stop_sample=sample_count,
+        channel_indices=indices, start_sample=start_sample, stop_sample=start_sample + sample_count,
     )
     physical = convert_signal_units(
         physical, [recording.metadata.signal_units[index] for index in indices], target_unit,
     )
     return physical[0] if direct is not None else physical[0] - physical[1]
+
+
+def _timeline_segments(
+    metadata: EEGMetadata,
+    *,
+    source_count: int,
+    source_rate: float,
+    target_rate: float,
+) -> list[dict[str, Any]]:
+    configured = metadata.extra.get("timeline_segments", ()) if isinstance(metadata.extra, Mapping) else ()
+    source_rows = list(configured) if isinstance(configured, (list, tuple)) else []
+    if not source_rows:
+        source_rows = [{
+            "segment_index": 0,
+            "source_sample_start": 0,
+            "source_sample_stop": source_count,
+            "global_start_sec": 0.0,
+            "global_end_sec": source_count / source_rate,
+            "duration_sec": source_count / source_rate,
+        }]
+    result: list[dict[str, Any]] = []
+    target_cursor = 0
+    for position, source in enumerate(source_rows):
+        source_start = int(source.get("source_sample_start", 0))
+        source_stop = min(int(source.get("source_sample_stop", source_count)), source_count)
+        if source_start < 0 or source_stop <= source_start:
+            raise EEGCompatibilityError("EEG timeline segment has invalid sample bounds.")
+        segment_source_count = source_stop - source_start
+        target_length = int(round(segment_source_count * target_rate / source_rate))
+        global_start = float(source.get("global_start_sec", source_start / source_rate))
+        result.append({
+            "segment_index": int(source.get("segment_index", position)),
+            "source_sample_start": source_start,
+            "source_sample_stop": source_stop,
+            "target_sample_start": target_cursor,
+            "target_sample_stop": target_cursor + target_length,
+            "global_start_sec": global_start,
+            "global_end_sec": global_start + target_length / target_rate,
+        })
+        target_cursor += target_length
+    if result[-1]["source_sample_stop"] != source_count:
+        raise EEGCompatibilityError("EEG timeline segments do not cover the complete recording.")
+    return result
 
 
 def _resample(signal: np.ndarray, source_rate: float, target_rate: float) -> np.ndarray:
@@ -399,10 +442,30 @@ def run_recording_inference(
         plan = _plan(recording.metadata, requirements)
         source_rate = _source_sampling_rate(recording.metadata, plan)
         source_count = _source_sample_count(recording, source_rate)
-        target_count = int(np.ceil(source_count * requirements.sampling_rate / source_rate))
+        timeline_segments = _timeline_segments(
+            recording.metadata,
+            source_count=source_count,
+            source_rate=source_rate,
+            target_rate=requirements.sampling_rate,
+        )
+        target_count = int(timeline_segments[-1]["target_sample_stop"])
         window_samples = requirements.input_samples
         stride_samples = int(round(requirements.window_stride_sec * requirements.sampling_rate))
-        starts = np.arange(0, max(target_count - window_samples + 1, 0), stride_samples, dtype=np.int64)
+        window_positions: list[tuple[int, float, float, int]] = []
+        for segment in timeline_segments:
+            local_starts = np.arange(
+                int(segment["target_sample_start"]),
+                max(int(segment["target_sample_stop"]) - window_samples + 1, int(segment["target_sample_start"])),
+                stride_samples,
+                dtype=np.int64,
+            )
+            for start in local_starts:
+                local_seconds = (int(start) - int(segment["target_sample_start"])) / requirements.sampling_rate
+                global_start = float(segment["global_start_sec"]) + local_seconds
+                window_positions.append(
+                    (int(start), global_start, global_start + requirements.window_duration_sec, int(segment["segment_index"]))
+                )
+        starts = np.asarray([item[0] for item in window_positions], dtype=np.int64)
         if not len(starts):
             raise EEGCompatibilityError("The EEG recording is shorter than one four-second model window.")
 
@@ -414,13 +477,24 @@ def run_recording_inference(
             )
             preprocessor = EEGPreprocessor(sampling_rate=requirements.sampling_rate)
             for index in range(len(BIPOLAR_CHANNELS)):
-                signal = _read_output_channel(
-                    recording, plan, index, source_count, requirements.expected_units or "uV"
-                )
-                resampled = _resample(signal, source_rate, requirements.sampling_rate)
-                if len(resampled) != target_count:
-                    raise EEGCompatibilityError("Resampled EEG channels do not have a consistent length.")
-                processed[index] = preprocessor.transform(resampled[None, :])[0]
+                for segment in timeline_segments:
+                    segment_source_count = int(segment["source_sample_stop"]) - int(segment["source_sample_start"])
+                    signal = _read_output_channel(
+                        recording,
+                        plan,
+                        index,
+                        segment_source_count,
+                        requirements.expected_units or "uV",
+                        start_sample=int(segment["source_sample_start"]),
+                    )
+                    resampled = _resample(signal, source_rate, requirements.sampling_rate)
+                    expected_length = int(segment["target_sample_stop"]) - int(segment["target_sample_start"])
+                    if len(resampled) != expected_length:
+                        raise EEGCompatibilityError("Resampled EEG segments do not have consistent lengths.")
+                    processed[
+                        index,
+                        int(segment["target_sample_start"]):int(segment["target_sample_stop"]),
+                    ] = preprocessor.transform(resampled[None, :])[0]
                 report_progress(
                     config, stage="preprocessing", label="Preparing EEG channels",
                     completed=index + 1, total=len(BIPOLAR_CHANNELS),
@@ -437,7 +511,7 @@ def run_recording_inference(
             prediction_path = output / "predictions.csv"
             fields = (
                 "recording_id", "window_id", "start_sec", "end_sec",
-                "probability", "logit", "predicted_label",
+                "eeg_segment_index", "probability", "logit", "predicted_label",
             )
             minimum, maximum = float("inf"), float("-inf")
             total_probability, positive_count = 0.0, 0
@@ -447,6 +521,7 @@ def run_recording_inference(
                 writer.writeheader()
                 for batch_start in range(0, len(starts), inference_batch_size):
                     batch_starts = starts[batch_start:batch_start + inference_batch_size]
+                    batch_positions = window_positions[batch_start:batch_start + inference_batch_size]
                     model_input = np.stack([
                         np.asarray(processed[:, start:start + window_samples]).T for start in batch_starts
                     ]).astype(np.float32)
@@ -457,13 +532,15 @@ def run_recording_inference(
                     prediction = adapter.predict_probabilities(model_input, preprocessed=True)
                     probabilities = np.asarray(prediction["probability"], dtype=float).reshape(-1)
                     logits = np.asarray(prediction["logits"], dtype=float).reshape(-1)
-                    for offset, (start, score, logit) in enumerate(zip(batch_starts, probabilities, logits)):
+                    for offset, (position, score, logit) in enumerate(zip(batch_positions, probabilities, logits)):
+                        start, global_start, global_end, segment_index = position
                         window_index = batch_start + offset
                         writer.writerow({
                             "recording_id": recording.metadata.recording_id,
                             "window_id": f"window-{window_index + 1:06d}",
-                            "start_sec": float(start / requirements.sampling_rate),
-                            "end_sec": float((start + window_samples) / requirements.sampling_rate),
+                            "start_sec": global_start,
+                            "end_sec": global_end,
+                            "eeg_segment_index": segment_index,
                             "probability": float(score), "logit": float(logit),
                             "predicted_label": int(score >= threshold),
                         })
@@ -493,6 +570,9 @@ def run_recording_inference(
             "inference_batch_size": inference_batch_size,
             "annotation_count": len(recording.annotations), "annotations_passed_to_model": False,
             "checkpoint_frozen": adapter.is_inference_only, "training_performed": False,
+            "timeline": "recording_wall_clock_elapsed",
+            "timeline_segments": timeline_segments,
+            "wall_duration_sec": max(float(item["global_end_sec"]) for item in timeline_segments),
         }
         metrics = {
             "prediction_only": True, "threshold": threshold, "window_count": len(starts),

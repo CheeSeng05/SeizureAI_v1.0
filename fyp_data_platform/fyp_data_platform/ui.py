@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 from seizure_multimodal.data_inspection import resolved_interval_label_records, resolved_label_records
+from seizure_multimodal.synchronization.video_segments import build_video_segment_manifest
 
 from fyp_data_platform.config.settings import PROJECT_ROOT, Settings, load_settings
 from fyp_data_platform.compute import compute_info
@@ -49,7 +50,9 @@ def _recording_source_id(recording_id: str, file_stem: str, count: int) -> str:
 def _register_video(
     *, settings: Settings, storage: Any, session_factory: Any, upload: FileStorage,
     dataset_id: str, dataset_name: str, patient_id: str, recording_id: str,
-    file_count: int,
+    file_count: int, shared_recording: bool = False,
+    recording_metadata: dict[str, Any] | None = None,
+    file_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     filename = secure_filename(upload.filename or "")
     if not filename:
@@ -60,7 +63,10 @@ def _register_video(
     dataset_id = safe_entity(dataset_id or "ui-recordings")
     dataset_name = dataset_name or "UI uploaded recordings"
     patient_id = safe_entity(patient_id or "local-patient-001")
-    source_recording_id = _recording_source_id(recording_id, Path(filename).stem, file_count)
+    source_recording_id = (
+        safe_entity(recording_id)
+        if shared_recording else _recording_source_id(recording_id, Path(filename).stem, file_count)
+    )
     relative = f"manual/{patient_id}/{source_recording_id}/{filename}"
     key = source_key(dataset_id, relative)
     with tempfile.TemporaryDirectory(prefix="fyp-ui-upload-") as directory:
@@ -77,15 +83,16 @@ def _register_video(
         patient, _ = repo.patient(dataset_id, patient_id, metadata_json={"uploaded_via": "web"})
         recording, _ = repo.recording(
             dataset_id, source_recording_id, patient_id=patient.id,
-            session_id=None, task=None, modality="video", duration_sec=None,
-            video_fps=None, start_datetime=None, metadata_json={"uploaded_via": "web"},
+            session_id=None, task=None, modality="multimodal" if shared_recording else "video", duration_sec=None,
+            video_fps=None, start_datetime=None,
+            metadata_json={"uploaded_via": "web", **(recording_metadata or {})},
         )
         file_row, _ = repo.stored_file(
             dataset_id, relative, recording_id=recording.id, role="source-media",
             modality="video", storage_backend=settings.storage_backend,
             storage_key=key, payload_state="stored", size_bytes=metadata.size_bytes,
             sha256=metadata.sha256, media_type=None,
-            metadata_json={"uploaded_via": "web", "original_filename": filename},
+            metadata_json={"uploaded_via": "web", "original_filename": filename, **(file_metadata or {})},
         )
     return {
         "file_id": file_row.id, "dataset_id": dataset_id,
@@ -163,10 +170,57 @@ def _validate_eeg_upload(upload: FileStorage) -> dict[str, Any]:
         upload.stream.seek(0)
 
 
+def _validate_multimodal_uploads(
+    *,
+    eeg_upload: FileStorage,
+    videos: list[FileStorage],
+    recording_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Stage one upload set and verify its Nicolet-to-video synchronization."""
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="fyp-ui-fusion-validation-") as directory:
+            root = Path(directory)
+            eeg_name = secure_filename(eeg_upload.filename or "")
+            eeg_path = root / eeg_name
+            eeg_upload.save(eeg_path)
+            validation = _validate_eeg_path(eeg_path)
+            video_paths: list[Path] = []
+            seen: set[str] = set()
+            for upload in videos:
+                filename = secure_filename(upload.filename or "")
+                if not filename:
+                    raise ValueError("Every video segment must have a filename.")
+                if filename.casefold() in seen:
+                    raise ValueError(f"Duplicate video segment filename: {filename}")
+                seen.add(filename.casefold())
+                path = root / filename
+                upload.save(path)
+                video_paths.append(path)
+            segments = build_video_segment_manifest(
+                eeg_path=eeg_path,
+                video_paths=video_paths,
+                recording_id=recording_id,
+            )
+            public = [item.public_dict() for item in segments]
+            by_filename = {
+                item.filename.casefold(): {
+                    "video_sync": item.public_dict(),
+                }
+                for item in segments
+            }
+            return validation, public, by_filename
+    finally:
+        eeg_upload.stream.seek(0)
+        for upload in videos:
+            upload.stream.seek(0)
+
+
 def _register_eeg(
     *, settings: Settings, storage: Any, session_factory: Any, upload: FileStorage,
     dataset_id: str, dataset_name: str, patient_id: str, recording_id: str,
-    validation: dict[str, Any] | None = None,
+    validation: dict[str, Any] | None = None, shared_recording: bool = False,
+    recording_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     filename = secure_filename(upload.filename or "")
     dataset_id = safe_entity(dataset_id or "ui-recordings")
@@ -190,8 +244,9 @@ def _register_eeg(
         patient, _ = repo.patient(dataset_id, patient_id, metadata_json={"uploaded_via": "web"})
         recording, _ = repo.recording(
             dataset_id, source_recording_id, patient_id=patient.id,
-            session_id=None, task=None, modality="eeg", duration_sec=validation.get("duration_sec"),
-            video_fps=None, start_datetime=None, metadata_json={"uploaded_via": "web"},
+            session_id=None, task=None, modality="multimodal" if shared_recording else "eeg", duration_sec=validation.get("duration_sec"),
+            video_fps=None, start_datetime=None,
+            metadata_json={"uploaded_via": "web", **(recording_metadata or {})},
         )
         file_row, _ = repo.stored_file(
             dataset_id, relative, recording_id=recording.id, role="source-data",
@@ -199,7 +254,10 @@ def _register_eeg(
             storage_key=key, payload_state="stored", size_bytes=metadata.size_bytes,
             sha256=metadata.sha256,
             media_type="text/csv" if Path(filename).suffix.lower() == ".csv" else "application/octet-stream",
-            metadata_json={"uploaded_via": "web", "original_filename": filename, **validation},
+            metadata_json={
+                "uploaded_via": "web", "original_filename": filename, **validation,
+                **({"multimodal_sync": recording_metadata} if recording_metadata else {}),
+            },
         )
     return {
         "file_id": file_row.id, "dataset_id": dataset_id, "patient_id": patient_id,
@@ -328,6 +386,15 @@ def _metric_body(document: dict[str, Any]) -> dict[str, Any]:
 
 
 def _best_metric_document(row: ModelRun) -> dict[str, Any]:
+    metrics = (row.metrics_json or {}).get("metrics") or {}
+    if row.modality == "fusion":
+        for path, document in metrics.items():
+            if str(path).replace("\\", "/").endswith("fusion/metrics.json") and isinstance(document, dict):
+                return document
+    preferred = f"{row.modality}_only/metrics.json"
+    for path, document in metrics.items():
+        if str(path).replace("\\", "/") == preferred and isinstance(document, dict):
+            return document
     documents = _metric_documents(row)
     for document in documents:
         body = _metric_body(document)
@@ -374,7 +441,7 @@ def _prediction_windows(
 ) -> list[dict[str, Any]]:
     artifact = _find_artifact(
         row, *(preferred_suffixes or (
-            "video_only/predictions.csv", "predictions.csv",
+            "fusion/predictions.csv", "video_only/predictions.csv", "predictions.csv",
             "video_only/probability_timeline.csv", "probability_timeline.csv",
         )),
     )
@@ -388,11 +455,11 @@ def _prediction_windows(
         if start is None or end is None:
             continue
         probability = _float_or_none(
-            csv_row.get("video_probability") or csv_row.get("probability")
+            csv_row.get("fused_probability") or csv_row.get("video_probability") or csv_row.get("probability")
             or csv_row.get("seizure_probability")
         )
         prediction_value = (
-            csv_row.get("video_prediction") or csv_row.get("prediction")
+            csv_row.get("fused_prediction") or csv_row.get("video_prediction") or csv_row.get("prediction")
             or csv_row.get("predicted_label")
         )
         try:
@@ -407,6 +474,18 @@ def _prediction_windows(
             "eeg_onset_sec": _float_or_none(csv_row.get("eeg_onset_sec")),
             "clinical_onset_sec": _float_or_none(csv_row.get("clinical_onset_sec")),
             "seizure_end_sec": _float_or_none(csv_row.get("seizure_end_sec")),
+            "window_id": csv_row.get("window_id"),
+            "video_segment_id": csv_row.get("video_segment_id"),
+            "eeg_probability": _float_or_none(csv_row.get("eeg_probability")),
+            "video_probability": _float_or_none(csv_row.get("video_probability")),
+            "fused_probability": _float_or_none(csv_row.get("fused_probability")),
+            "eeg_prediction": _float_or_none(csv_row.get("eeg_prediction")),
+            "video_prediction": _float_or_none(csv_row.get("video_prediction")),
+            "fused_prediction": _float_or_none(csv_row.get("fused_prediction")),
+            "fusion_available": str(csv_row.get("fusion_available", "")).strip().lower() in {"true", "1", "yes"},
+            "video_coverage": _float_or_none(csv_row.get("video_coverage")),
+            "video_segment_ids": [value for value in str(csv_row.get("video_segment_ids", "")).split("|") if value],
+            "video_window_ids": [value for value in str(csv_row.get("video_window_ids", "")).split("|") if value],
         })
     return windows
 
@@ -528,6 +607,7 @@ def _patient_summary(patient):
 def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
     windows = _prediction_windows(storage, row)
     eeg_windows = _prediction_windows(storage, row, "eeg_only/predictions.csv")
+    video_windows = _prediction_windows(storage, row, "fusion/video_timeline.csv")
     summary = _run_summary(row)
     document = _best_metric_document(row)
     body = _metric_body(document)
@@ -543,7 +623,8 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
     for path, value in ((row.metrics_json or {}).get("metrics") or {}).items():
         if not isinstance(value, dict):
             continue
-        name = "eeg" if "eeg" in str(path).lower() else "video" if "video" in str(path).lower() else str(path)
+        lowered_path = str(path).lower()
+        name = "fusion" if "fusion/metrics" in lowered_path else "eeg" if "eeg" in lowered_path else "video" if "video" in lowered_path else str(path)
         workflow_metrics[name] = {
             "status": value.get("status"), "metrics": _metric_body(value),
             "metadata": value.get("metadata"), "error": value.get("error"),
@@ -561,7 +642,8 @@ def _run_result(storage: Any, session: Any, row: ModelRun) -> dict[str, Any]:
             or max((item["end_sec"] for item in windows), default=None)
         ),
         "metrics": body, "workflow_metrics": workflow_metrics,
-        "run": run_info, "windows": windows, "eeg_windows": eeg_windows,
+        "run": run_info, "windows": windows, "fusion_windows": windows if row.modality == "fusion" else [],
+        "eeg_windows": eeg_windows, "video_windows": video_windows,
         "ground_truth": ground_truth,
         "source_video": (
             {
@@ -679,26 +761,37 @@ def create_app(config_path: str | None = None) -> Any:
                 "id": row.recording_id, "dataset_id": row.dataset_id,
                 "recording_id": row.recording_id, "recording_source_id": source_id,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
-                "video": None, "eeg": None, "label": None,
+                "video": None, "videos": [], "eeg": None, "label": None,
+                "recording_type": (parent.metadata_json or {}).get("recording_type") or parent.modality,
+                "sync_status": (parent.metadata_json or {}).get("sync_status", "unavailable"),
+                "sync_verified": bool((parent.metadata_json or {}).get("sync_verified")),
+                "sync_source": (parent.metadata_json or {}).get("sync_source"),
                 "archived": parent.archived, "deleting": parent.deleting,
             })
-            if recording.get("label" if row.modality == "labels" else row.modality) is not None:
+            if row.modality != "video" and recording.get("label" if row.modality == "labels" else row.modality) is not None:
                 continue
             file_payload = {
                 "id": row.id, "filename": Path(row.source_relative_path).name,
                 "storage_key": row.storage_key, "size_bytes": row.size_bytes,
                 "sha256": row.sha256,
+                "metadata": row.metadata_json or {},
             }
             if row.modality == "labels":
                 recording["label"] = {
                     **file_payload,
                     "identity": (row.metadata_json or {}).get("label_identity"),
                 }
+            elif row.modality == "video":
+                recording["videos"].append(file_payload)
+                if recording["video"] is None:
+                    recording["video"] = file_payload
             else:
                 recording[row.modality] = file_payload
         for parent in records.values():
             if bool(parent.archived) == show_archived and parent.id not in grouped:
-                grouped[parent.id] = {"id": parent.id, "dataset_id": parent.dataset_id, "recording_source_id": parent.source_recording_id, "created_at": parent.created_at.isoformat(), "archived": parent.archived, "deleting": parent.deleting, "video": None, "eeg": None, "label": None}
+                grouped[parent.id] = {"id": parent.id, "dataset_id": parent.dataset_id, "recording_source_id": parent.source_recording_id, "created_at": parent.created_at.isoformat(), "archived": parent.archived, "deleting": parent.deleting, "video": None, "videos": [], "eeg": None, "label": None, "recording_type": (parent.metadata_json or {}).get("recording_type") or parent.modality, "sync_status": (parent.metadata_json or {}).get("sync_status", "unavailable"), "sync_verified": bool((parent.metadata_json or {}).get("sync_verified")), "sync_source": (parent.metadata_json or {}).get("sync_source")}
+        for recording in grouped.values():
+            recording["videos"].sort(key=lambda item: float(((item.get("metadata") or {}).get("video_sync") or {}).get("global_start_sec", 0.0)))
         recordings = sorted(grouped.values(), key=lambda item: item.get("created_at") or "", reverse=True)
         summaries = []
         for row in runs:
@@ -819,14 +912,14 @@ def create_app(config_path: str | None = None) -> Any:
     @exclusive_change
     def upload() -> Any:
         mode = str(request.form.get("mode", "video")).strip().lower()
-        if mode not in {"video", "eeg", "unimodal"}:
-            return jsonify({"error": "Upload mode must be video, eeg, or unimodal."}), 400
+        if mode not in {"video", "eeg", "unimodal", "fusion"}:
+            return jsonify({"error": "Upload mode must be video, eeg, fusion, or unimodal."}), 400
         files = [item for item in request.files.getlist("videos") if item.filename]
         eeg_upload = request.files.get("eeg")
         label_upload = request.files.get("labels")
-        if mode in {"video", "unimodal"} and not files:
+        if mode in {"video", "unimodal", "fusion"} and not files:
             return jsonify({"error": "Choose at least one video file."}), 400
-        if mode in {"eeg", "unimodal"} and not (eeg_upload and eeg_upload.filename):
+        if mode in {"eeg", "unimodal", "fusion"} and not (eeg_upload and eeg_upload.filename):
             return jsonify({"error": "Choose one EEG .csv, .edf, or .e file."}), 400
         if mode == "unimodal" and len(files) != 1:
             return jsonify({"error": "Upload exactly one video with one EEG file when running both independently."}), 400
@@ -835,16 +928,40 @@ def create_app(config_path: str | None = None) -> Any:
             recording_id = str(request.form.get("recording_id", "")).strip()
             with session_factory() as session:
                 dataset = safe_entity(request.form.get("dataset_id", "ui-recordings"))
-                for item in files:
-                    lifecycle.require_available(session, dataset, _recording_source_id(recording_id, Path(secure_filename(item.filename)).stem, len(files)))
+                if mode == "fusion":
+                    lifecycle.require_available(session, dataset, safe_entity(recording_id))
+                else:
+                    for item in files:
+                        lifecycle.require_available(session, dataset, _recording_source_id(recording_id, Path(secure_filename(item.filename)).stem, len(files)))
                 if eeg_upload and eeg_upload.filename:
                     lifecycle.require_available(session, dataset, safe_entity(recording_id or Path(secure_filename(eeg_upload.filename)).stem))
             if mode == "unimodal" and not recording_id:
                 raise ValueError("Recording ID is required when uploading video and EEG together.")
+            if mode == "fusion" and not recording_id:
+                raise ValueError("Recording ID is required for a synchronized multimodal upload.")
+            fusion_validation = None
+            fusion_segments: list[dict[str, Any]] = []
+            fusion_file_metadata: dict[str, dict[str, Any]] = {}
+            recording_metadata: dict[str, Any] = {}
+            if mode == "fusion" and eeg_upload:
+                fusion_validation, fusion_segments, fusion_file_metadata = _validate_multimodal_uploads(
+                    eeg_upload=eeg_upload,
+                    videos=files,
+                    recording_id=safe_entity(recording_id),
+                )
+                recording_metadata = {
+                    "recording_type": "multimodal",
+                    "sync_status": "verified",
+                    "sync_verified": True,
+                    "sync_source": "nicolet_videosyncguid+video_container_duration",
+                    "video_segments": fusion_segments,
+                }
             label_identity = None
             if label_upload and label_upload.filename:
                 if mode == "eeg":
                     raise ValueError("The video label workbook cannot be attached to an EEG-only upload.")
+                if mode == "fusion":
+                    raise ValueError("Ground-truth video labels are not attached during multimodal registration.")
                 if len(files) != 1:
                     raise ValueError("Upload exactly one video when attaching a label workbook.")
                 label_identity = _validate_label_upload(
@@ -861,6 +978,9 @@ def create_app(config_path: str | None = None) -> Any:
                     dataset_name=request.form.get("dataset_name", "UI uploaded recordings"),
                     patient_id=patient_id,
                     recording_id=recording_id, file_count=len(files),
+                    shared_recording=mode == "fusion",
+                    recording_metadata=recording_metadata,
+                    file_metadata=fusion_file_metadata.get(secure_filename(item.filename or "").casefold()),
                 ) for item in files
             ]
             uploaded_eeg = None
@@ -870,6 +990,9 @@ def create_app(config_path: str | None = None) -> Any:
                     upload=eeg_upload, dataset_id=request.form.get("dataset_id", "ui-recordings"),
                     dataset_name=request.form.get("dataset_name", "UI uploaded recordings"),
                     patient_id=patient_id, recording_id=recording_id,
+                    validation=fusion_validation,
+                    shared_recording=mode == "fusion",
+                    recording_metadata=recording_metadata,
                 )
             registered_labels = []
             if label_identity and label_upload:
@@ -883,6 +1006,7 @@ def create_app(config_path: str | None = None) -> Any:
             return jsonify({"error": str(error)}), 400
         return jsonify({
             "mode": mode, "videos": uploaded_videos, "eeg": uploaded_eeg,
+            "synchronization": recording_metadata or None,
             "labels": registered_labels,
             "uploaded": [*uploaded_videos, *([uploaded_eeg] if uploaded_eeg else [])],
         }), 201
@@ -917,10 +1041,25 @@ def create_app(config_path: str | None = None) -> Any:
         require_labels = str(data.get("require_labels", "false")).lower() in {"true", "1", "yes"}
         if not dataset_id or not recording_id:
             return jsonify({"error": "dataset_id and recording_id are required."}), 400
-        if mode not in {"video", "eeg", "unimodal"}:
-            return jsonify({"error": "Run mode must be video, eeg, or unimodal."}), 400
+        if mode not in {"video", "eeg", "fusion", "unimodal"}:
+            return jsonify({"error": "Run mode must be video, eeg, fusion, or unimodal."}), 400
         if require_labels and mode == "eeg":
             return jsonify({"error": "require_labels applies to video evaluation, not EEG CSV labels."}), 400
+        if mode == "fusion":
+            with session_factory() as session:
+                recording = session.get(Recording, f"{dataset_id}::{recording_id}")
+                metadata = recording.metadata_json if recording else {}
+                if not recording:
+                    return jsonify({"error": "Recording not found."}), 404
+                if not bool((metadata or {}).get("sync_verified")):
+                    return jsonify({"error": "Multimodal fusion unavailable: Video and EEG synchronization could not be verified."}), 409
+                modalities = set(session.scalars(select(StoredFile.modality).where(
+                    StoredFile.recording_id == recording.id,
+                    StoredFile.payload_state == "stored",
+                )).all())
+                missing = [name for name in ("video", "eeg") if name not in modalities]
+                if missing:
+                    return jsonify({"error": f"Multimodal fusion unavailable: missing {', '.join(missing)} input."}), 409
         if not run_lock.acquire(blocking=False):
             return jsonify({"error": "Another model run is already active."}), 409
         try:

@@ -10,6 +10,7 @@ import pytest
 from fyp_data_platform import ui
 from fyp_data_platform.db.models import ModelRun
 from fyp_data_platform.db.repository import CatalogRepository
+from fyp_data_platform.integrations.seizure_model import ModelRunResult
 from fyp_data_platform.storage.local import LocalStorage
 
 
@@ -26,6 +27,38 @@ def test_completed_labelled_run_derives_events_from_saved_windows() -> None:
     assert outcome is not None
     assert outcome["event_count"] == 1
     assert outcome["events"] == [{"start_sec": 1.0, "end_sec": 3.0, "score": 0.8}]
+
+
+def test_fusion_result_parser_preserves_probabilities_coverage_and_contributors(
+    tmp_path, settings,
+) -> None:
+    storage = LocalStorage(settings.local_storage_root)
+    source = tmp_path / "predictions.csv"
+    source.write_text(
+        "recording_id,window_id,start_sec,end_sec,eeg_probability,video_probability,"
+        "fused_probability,eeg_prediction,video_prediction,fused_prediction,"
+        "fusion_available,video_coverage,video_segment_ids,video_window_ids\n"
+        "recording,window-000001,10,14,0.8,0.4,0.72,1,0,1,true,1.0,"
+        "segment-0001|segment-0002,a-1|b-1\n",
+        encoding="utf-8",
+    )
+    stored = storage.put_file(source, "runs/fusion/predictions.csv")
+    run = ModelRun(
+        name="fusion", modality="fusion", status="completed",
+        metrics_json={"artifacts": [{
+            "relative_path": "fusion/predictions.csv", "key": stored.key,
+            "size_bytes": stored.size_bytes, "sha256": stored.sha256,
+        }]},
+    )
+
+    windows = ui._prediction_windows(storage, run)
+
+    assert windows[0]["eeg_probability"] == pytest.approx(0.8)
+    assert windows[0]["video_probability"] == pytest.approx(0.4)
+    assert windows[0]["fused_probability"] == pytest.approx(0.72)
+    assert windows[0]["fusion_available"] is True
+    assert windows[0]["video_coverage"] == pytest.approx(1.0)
+    assert windows[0]["video_segment_ids"] == ["segment-0001", "segment-0002"]
 
 
 def test_health_and_empty_catalog_use_platform_database(settings, migrated_db, monkeypatch) -> None:
@@ -240,6 +273,89 @@ def test_both_mode_requires_shared_recording_id(settings, migrated_db, monkeypat
     assert response.get_json()["error"] == "Recording ID is required when uploading video and EEG together."
 
 
+def test_multimodal_upload_registers_multiple_verified_video_segments(
+    settings, migrated_db, monkeypatch,
+) -> None:
+    engine, factory = migrated_db
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: LocalStorage(settings.local_storage_root))
+    segments = [
+        {"segment_id": "segment-0001", "filename": "second.avi", "global_start_sec": 40.0,
+         "global_end_sec": 50.0, "duration_sec": 10.0, "fps": 25.0,
+         "sync_source": "nicolet_videosyncguid", "sync_verified": True},
+        {"segment_id": "segment-0002", "filename": "first.avi", "global_start_sec": 10.0,
+         "global_end_sec": 20.0, "duration_sec": 10.0, "fps": 25.0,
+         "sync_source": "nicolet_videosyncguid", "sync_verified": True},
+    ]
+    monkeypatch.setattr(
+        ui,
+        "_validate_multimodal_uploads",
+        lambda **_kwargs: (
+            {"format": "nicolet-e", "duration_sec": 60.0, "channel_count": 18},
+            segments,
+            {item["filename"].casefold(): {"video_sync": item} for item in segments},
+        ),
+    )
+    monkeypatch.setattr(
+        "fyp_data_platform.ui.SeizureModelIntegration.run",
+        lambda _self, dataset_id, recording_id, **kwargs: ModelRunResult(
+            "run-fusion", dataset_id, recording_id, kwargs["mode"], "completed", "outputs", [], {}, [], {},
+        ),
+    )
+    client = ui.create_app().test_client()
+
+    response = client.post(
+        "/api/uploads",
+        data={
+            "mode": "fusion",
+            "videos": [(BytesIO(b"first"), "first.avi"), (BytesIO(b"second"), "second.avi")],
+            "eeg": (BytesIO(b"synthetic nicolet"), "recording.e"),
+            "dataset_id": "ui-recordings", "patient_id": "Pat01", "recording_id": "fusion-001",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201, response.get_json()
+    catalog = client.get("/api/catalog").get_json()["recordings"][0]
+    assert catalog["recording_type"] == "multimodal"
+    assert catalog["sync_verified"] is True
+    assert [item["filename"] for item in catalog["videos"]] == ["first.avi", "second.avi"]
+    started = client.post(
+        "/api/runs",
+        json={"dataset_id": "ui-recordings", "recording_id": "fusion-001", "mode": "fusion"},
+    )
+    assert started.status_code == 202, started.get_json()
+
+
+def test_fusion_run_rejects_unverified_video_eeg_pair(settings, migrated_db, monkeypatch) -> None:
+    engine, factory = migrated_db
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: LocalStorage(settings.local_storage_root))
+    client = ui.create_app().test_client()
+    uploaded = client.post(
+        "/api/uploads",
+        data={
+            "mode": "unimodal", "videos": (BytesIO(b"video"), "video.mp4"),
+            "eeg": (BytesIO(_eeg_csv()), "eeg.csv"),
+            "dataset_id": "ui-recordings", "patient_id": "Pat01", "recording_id": "unverified-001",
+        },
+        content_type="multipart/form-data",
+    )
+    assert uploaded.status_code == 201, uploaded.get_json()
+
+    response = client.post(
+        "/api/runs",
+        json={"dataset_id": "ui-recordings", "recording_id": "unverified-001", "mode": "fusion"},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == (
+        "Multimodal fusion unavailable: Video and EEG synchronization could not be verified."
+    )
+
+
 def test_run_rejects_unknown_mode(settings, migrated_db, monkeypatch) -> None:
     engine, factory = migrated_db
     monkeypatch.setattr(ui, "load_settings", lambda _: settings)
@@ -247,11 +363,11 @@ def test_run_rejects_unknown_mode(settings, migrated_db, monkeypatch) -> None:
     monkeypatch.setattr(ui, "create_storage", lambda _: LocalStorage(settings.local_storage_root))
 
     response = ui.create_app().test_client().post(
-        "/api/runs", json={"dataset_id": "data", "recording_id": "recording", "mode": "fusion"}
+        "/api/runs", json={"dataset_id": "data", "recording_id": "recording", "mode": "unknown"}
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == "Run mode must be video, eeg, or unimodal."
+    assert response.get_json()["error"] == "Run mode must be video, eeg, fusion, or unimodal."
 
 
 def test_source_video_supports_browser_byte_ranges(settings, migrated_db, monkeypatch) -> None:

@@ -28,6 +28,7 @@ from seizure_multimodal.eeg.loaders.nicolet_e_loader import (
 from seizure_multimodal.eeg.recording_inference import (
     EEGCompatibilityError,
     ModelEEGRequirements,
+    _timeline_segments,
     assess_compatibility,
     convert_signal_units,
     prepare_model_windows,
@@ -352,6 +353,27 @@ class RecordingInferenceTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("nicolet_e2edf"), "Nicolet reader unavailable")
 class NicoletAdapterTests(unittest.TestCase):
+    def test_acquisition_gap_is_preserved_on_global_timeline(self) -> None:
+        metadata = EEGMetadata(
+            recording_id="gap-recording",
+            source_format="nicolet-e",
+            channel_names=("A",), sampling_rates=(500.0,), signal_units=("uV",),
+            duration_sec=20.0, sample_count=10_000, montage_reference="common",
+            extra={"timeline_segments": [
+                {"segment_index": 0, "source_sample_start": 0, "source_sample_stop": 5_000,
+                 "global_start_sec": 0.0, "global_end_sec": 10.0, "duration_sec": 10.0},
+                {"segment_index": 1, "source_sample_start": 5_000, "source_sample_stop": 10_000,
+                 "global_start_sec": 25.0, "global_end_sec": 35.0, "duration_sec": 10.0},
+            ]},
+        )
+
+        segments = _timeline_segments(
+            metadata, source_count=10_000, source_rate=500.0, target_rate=256.0,
+        )
+
+        self.assertEqual([item["global_start_sec"] for item in segments], [0.0, 25.0])
+        self.assertEqual(segments[0]["target_sample_stop"], segments[1]["target_sample_start"])
+
     def test_synthetic_reader_contract_without_private_data(self) -> None:
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         public = {

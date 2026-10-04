@@ -21,3 +21,20 @@ __all__ = [
     "generate_windows",
     "make_window_id",
 ]
+from .video_segments import (
+    NicoletVideoSyncRecord,
+    VideoSegment,
+    build_video_segment_manifest,
+    fuse_prediction_timelines,
+    parse_nicolet_video_sync_payload,
+    video_rows_on_global_timeline,
+)
+
+__all__ = [
+    "NicoletVideoSyncRecord",
+    "VideoSegment",
+    "build_video_segment_manifest",
+    "fuse_prediction_timelines",
+    "parse_nicolet_video_sync_payload",
+    "video_rows_on_global_timeline",
+]

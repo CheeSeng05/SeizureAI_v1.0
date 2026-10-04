@@ -11,8 +11,14 @@ from seizure_multimodal.fusion.late_fusion import LateFusion
 
 class FusionTests(unittest.TestCase):
     def test_equal_weight_late_fusion_dimensions(self) -> None:
-        result = LateFusion().predict(video_probability=[0.2, 0.8], eeg_probability=[0.4, 0.6])
+        result = LateFusion(video_weight=0.5, eeg_weight=0.5).predict(
+            video_probability=[0.2, 0.8], eeg_probability=[0.4, 0.6]
+        )
         np.testing.assert_allclose(result, [0.3, 0.7])
+
+    def test_default_late_fusion_is_eeg_weighted_baseline(self) -> None:
+        result = LateFusion().predict(video_probability=[0.2], eeg_probability=[0.9])
+        np.testing.assert_allclose(result, [0.76])
 
     def test_missing_modality_fails_explicitly(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing data is not zero-filled"):

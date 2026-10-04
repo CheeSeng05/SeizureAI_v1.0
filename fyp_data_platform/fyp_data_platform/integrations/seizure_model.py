@@ -69,8 +69,8 @@ class SeizureModelIntegration:
         def progress(stage: str, label: str, percent: float, **extra: Any) -> None:
             if progress_callback:
                 progress_callback({"stage": stage, "stage_label": label, "percent": percent, "run_id": run_id, **extra})
-        if mode not in {"video", "eeg", "unimodal", "strict_multimodal"}:
-            raise ValueError("Managed runs support video, eeg, unimodal, or strict_multimodal.")
+        if mode not in {"video", "eeg", "unimodal", "fusion", "strict_multimodal"}:
+            raise ValueError("Managed runs support video, eeg, unimodal, fusion, or strict_multimodal.")
         project = self.settings.model_project_path.resolve()
         if not (project / "seizure_multimodal" / "__main__.py").is_file():
             raise FileNotFoundError(f"Authoritative model project not found: {project}")
@@ -88,6 +88,7 @@ class SeizureModelIntegration:
             name: self._resolve_file(dataset_id, recording_id, name)
             for name in ("video", "labels", "eeg")
         }
+        video_rows = self._resolve_files(dataset_id, recording_id, "video")
         resolved = {
             "video": video_key or (resolved_rows["video"].storage_key if resolved_rows["video"] else None),
             # A recording may have labels registered, but prediction-only runs
@@ -102,19 +103,45 @@ class SeizureModelIntegration:
             required = {"video", "labels"} if require_labels else {"video"}
         elif mode == "eeg":
             required = {"eeg"}
-        elif mode == "strict_multimodal":
-            required = {"video", "labels", "eeg"}
+        elif mode in {"fusion", "strict_multimodal"}:
+            required = {"video", "eeg"}
         else:
             required = {"video", "labels", "eeg"} if require_labels else set()
         missing = sorted(name for name in required if not resolved[name])
+        if mode in {"fusion", "strict_multimodal"} and not video_rows and not video_key:
+            missing = sorted(set(missing) | {"video"})
         if missing:
             raise LookupError(f"Missing registered model input(s): {', '.join(missing)}")
         if mode == "unimodal" and not any(resolved[name] for name in ("video", "eeg")):
             raise LookupError("Missing registered model input(s): video or eeg")
 
         staged: dict[str, Path] = {}
+        staged_videos: list[Path] = []
+        multi_segment_video_run = mode == "video" and len(video_rows) > 1 and not video_key
+        if mode in {"fusion", "strict_multimodal"} or multi_segment_video_run:
+            (input_root / "videos").mkdir(parents=True, exist_ok=True)
+            selected_video_rows = video_rows
+            if video_key:
+                selected_video_rows = []
+                destination = input_root / "videos" / Path(video_key).name
+                self.storage.download_file(video_key, destination)
+                staged_videos.append(destination.resolve())
+            else:
+                used_names: set[str] = set()
+                for index, row in enumerate(selected_video_rows, start=1):
+                    original = str((row.metadata_json or {}).get("original_filename") or Path(row.storage_key).name)
+                    filename = Path(original).name
+                    key = filename.casefold()
+                    if key in used_names:
+                        raise ValueError(f"Duplicate registered video segment filename: {filename}")
+                    used_names.add(key)
+                    destination = input_root / "videos" / filename
+                    self.storage.download_file(row.storage_key, destination)
+                    staged_videos.append(destination.resolve())
         for name, key in resolved.items():
             check_stop(cancel_event)
+            if name == "video" and (mode in {"fusion", "strict_multimodal"} or multi_segment_video_run):
+                continue
             if key:
                 destination = input_root / f"{name}{Path(key).suffix}"
                 self.storage.download_file(key, destination)
@@ -152,7 +179,12 @@ class SeizureModelIntegration:
                     raise ValueError("Label CSV contains multiple recordings; re-upload with a matching Recording ID.")
             label_identity["recording_id"] = selector or None
         config = self._build_config(
-            project, output_root.resolve(), staged, label_identity=label_identity
+            project,
+            output_root.resolve(),
+            staged,
+            label_identity=label_identity,
+            video_paths=staged_videos,
+            recording_id=recording_id,
         )
         progress_path = run_root / "progress.json"
         config.setdefault("testing", {})["progress_file"] = str(progress_path.resolve())
@@ -284,15 +316,32 @@ class SeizureModelIntegration:
             )
         return row
 
+    def _resolve_files(self, dataset_id: str, recording_id: str, modality: str) -> list[StoredFile]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(StoredFile).where(
+                    StoredFile.dataset_id == dataset_id,
+                    StoredFile.recording_id == f"{dataset_id}::{recording_id}",
+                    StoredFile.modality == modality,
+                    StoredFile.payload_state == "stored",
+                ).order_by(StoredFile.created_at.asc(), StoredFile.source_relative_path.asc())
+            ).all()
+        return list(rows)
+
     def _build_config(
         self, project: Path, output: Path, staged: dict[str, Path],
         *, label_identity: dict[str, Any] | None = None,
+        video_paths: list[Path] | None = None,
+        recording_id: str | None = None,
     ) -> dict[str, Any]:
         config = yaml.safe_load((project / "configs" / "inference.yaml").read_text(encoding="utf-8"))
         config["training"] = {"enabled": False}
         config.setdefault("testing", {})["output_directory"] = str(output)
         data = config.setdefault("data", {})
+        video_paths = list(video_paths or [])
         data["video"] = str(staged.get("video", project / "__missing_video__"))
+        data["video_segments"] = [str(path) for path in video_paths]
+        data["recording_id"] = recording_id
         data["video_labels"] = str(staged["labels"]) if "labels" in staged else None
         eeg_path = staged.get("eeg")
         if eeg_path and eeg_path.suffix.lower() == ".csv":
@@ -322,6 +371,14 @@ class SeizureModelIntegration:
                 })
                 if label_identity.get("recording_id"):
                     data["video_provenance"]["recording_id"] = label_identity["recording_id"]
+        elif video_paths:
+            # Never retain the example video's identity/hash for a registered
+            # multi-segment clinical recording. Each segment is independently
+            # tied to the .e recording by the verified sync manifest.
+            data["video_provenance"] = {
+                "source": "fyp_data_platform synchronized segment catalog",
+                "segment_count": len(video_paths),
+            }
         for section, keys in {
             "video_encoder": ("source", "checkpoint", "dynamic_partition", "pose_source", "pose_checkpoint"),
             "eeg_encoder": ("checkpoint",),

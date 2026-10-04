@@ -93,6 +93,43 @@ class NicoletERecording(EEGRecording):
         channel_names = tuple(str(value).strip() for value in public["label"])
         sampling_rate = float(public["Fs"])
         start_time = getattr(raw, "startDateTime", None)
+        timeline_segments = []
+        source_sample_cursor = 0
+        dominant_channel = int(raw.matchingChannels[0]) - 1
+        raw_segments = tuple(getattr(raw, "Segments", ()) or ())
+        complete_segment_timing = bool(raw_segments) and start_time is not None and all(
+            hasattr(segment, "sampleCount")
+            and hasattr(segment, "date")
+            and hasattr(segment, "duration")
+            for segment in raw_segments
+        )
+        if complete_segment_timing:
+            for index, segment in enumerate(raw_segments):
+                segment_samples = int(segment.sampleCount[dominant_channel])
+                global_start_sec = float((segment.date - start_time).total_seconds())
+                timeline_segments.append({
+                    "segment_index": index,
+                    "source_sample_start": source_sample_cursor,
+                    "source_sample_stop": source_sample_cursor + segment_samples,
+                    "global_start_sec": global_start_sec,
+                    "global_end_sec": global_start_sec + float(segment.duration),
+                    "duration_sec": float(segment.duration),
+                })
+                source_sample_cursor += segment_samples
+        else:
+            duration_sec = float(public["nSamples"]) / sampling_rate
+            timeline_segments.append({
+                "segment_index": 0,
+                "source_sample_start": 0,
+                "source_sample_stop": int(public["nSamples"]),
+                "global_start_sec": 0.0,
+                "global_end_sec": duration_sec,
+                "duration_sec": duration_sec,
+            })
+        wall_duration_sec = max(
+            (float(item["global_end_sec"]) for item in timeline_segments),
+            default=float(public["nSamples"]) / sampling_rate,
+        )
         self.metadata = EEGMetadata(
             recording_id=recording_id,
             source_format="nicolet-e",
@@ -106,8 +143,11 @@ class NicoletERecording(EEGRecording):
             vendor="Natus/Nicolet/Nervus",
             reader="nicolet-e2edf",
             extra={
-                "segment_count": len(getattr(raw, "Segments", ())),
+                "segment_count": len(timeline_segments),
                 "excluded_mixed_rate_channel_count": len(getattr(raw, "excludedChannels", ())),
+                "timeline": "recording_wall_clock_elapsed",
+                "timeline_segments": timeline_segments,
+                "wall_duration_sec": wall_duration_sec,
             },
         )
         self.annotations = nicolet_events_to_annotations(

@@ -156,10 +156,35 @@ python -m seizure_multimodal test --mode eeg
 python -m seizure_multimodal test --mode strict_multimodal
 ```
 
-Fusion requires matching non-empty patient and recording IDs, overlapping
-timestamps, both modalities, and `is_verified_pair=true`. The current sources
-fail those checks, so strict mode writes
-`results/strict_multimodal/SKIPPED.txt` and performs no fusion.
+For backward compatibility, strict mode still rejects ordinary sources that do
+not form a verified pair. When its configuration contains one Nicolet `.e`
+recording and synchronized `video_segments`, it routes to the same real fusion
+workflow described below. The independent sample video and EEG CSV still fail
+the strict checks and are never presented as multimodal evidence.
+
+### Verified synchronized fusion
+
+The platform normally creates the required configuration after a **Video + EEG**
+upload. The equivalent model command is:
+
+```powershell
+python -m seizure_multimodal test --mode fusion --config configs/inference.yaml --root .
+```
+
+`data.eeg_file` must identify one Nicolet `.e` file, `data.video_segments` must
+list one or more matching AVI/MP4 files, and `data.recording_id` identifies the
+shared recording. Fusion does not trust list order. It decodes the embedded
+Nicolet `VIDEOSYNCGUID` timestamps, confirms them against `Video Start` events,
+matches the embedded filenames exactly, and uses each video container's measured
+duration/FPS to build `fusion/video_segment_manifest.json`.
+
+EEG wall-clock time is the master timeline, so acquisition gaps remain gaps.
+Each video's local prediction timestamps are converted to this global time.
+For every four-second EEG window, overlapping video probabilities are aggregated
+with an overlap-duration weighted mean. The same calculation works across video
+segment boundaries. With the default full-coverage requirement, a window without
+four seconds of synchronized video receives no fused value; missing video is
+never converted to probability zero.
 
 ### Simulated multimodal
 
@@ -299,16 +324,20 @@ generalisation concerns; its reported 97% is not an expected accuracy here.
 
 ## Fusion and training
 
-Late fusion is fixed and configurable:
+Real multimodal inference uses configurable weighted probability-level late
+fusion:
 
 ```text
-fusion_probability = 0.5 × video_probability + 0.5 × eeg_probability
+fusion_probability = 0.20 × video_probability + 0.80 × eeg_probability
 ```
 
-Weights are never optimized on the artificial pair. Feature fusion defines the
-shape-only architecture `384→128` and `32→128`, concatenation to 256, and an
-MLP head. With no verified paired checkpoint/data, that head is not trained or
-reported as a clinical model.
+The default 80% EEG / 20% video split is an engineering baseline and has not
+been clinically optimized. Both weights must be non-negative and sum to one.
+The weights, `0.50` fused decision threshold, and minimum video coverage are
+configuration values; they must later be selected on patient-disjoint validation
+data, never the final test recording. Feature fusion defines the shape-only
+architecture `384→128` and `32→128`, concatenation to 256, and an MLP head. It
+has no trained paired checkpoint and is not invoked by real fusion.
 
 Defaults remain:
 
@@ -322,7 +351,15 @@ eeg_encoder:
   pretrained: true
   freeze: true
 fusion:
+  method: weighted_late_fusion
   trainable: false
+  eeg_weight: 0.80
+  video_weight: 0.20
+  threshold: 0.50
+  timeline: eeg
+  alignment: overlap_weighted_mean
+  require_verified_sync: true
+  minimum_video_coverage: 1.0
 ```
 
 Future HUKM stage 1 may freeze both encoders and train only a fusion head on
@@ -357,6 +394,12 @@ results/
     label_mapping.json
     eeg_confusion_matrix.png  # only after successful EEG inference
     eeg_roc.png               # only after successful EEG inference
+  fusion/
+    video_segment_manifest.json
+    video_timeline.csv
+    predictions.csv
+    metrics.json
+    video_segments/           # per-segment frozen video-model artifacts
   strict_multimodal/
     metrics.json
     SKIPPED.txt
@@ -385,8 +428,9 @@ and pairing, checkpoints, training safeguards, probability/label handling,
 late fusion, embedding shapes, metrics, and result metadata.
 
 The executed video run used Python 3.12, PyTorch `2.11.0+cu128`, CUDA runtime
-12.8, and an NVIDIA GeForce RTX 4070 Laptop GPU. The current model suite passes
-70 tests with 7 dependency/data-conditional skips:
+12.8, and an NVIDIA GeForce RTX 4070 Laptop GPU. Run the current suite locally
+for the authoritative pass/skip count because optional media and system
+dependencies change which integration checks are available:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v

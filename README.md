@@ -222,8 +222,9 @@ database, uploaded videos and stored results.
 ## Basic use
 
 1. Open the dashboard.
-2. Choose **Upload**, select Video, EEG, or **Both independently**, and register the required files.
-3. Open **Recordings** and select the matching Video, EEG, or Both run button.
+2. Choose **Upload**, select Video, EEG, or **Video + EEG**, and register the required files.
+3. Open **Recordings** and select **Run Video Model**, **Run EEG Model**, or
+   **Run Multimodal Fusion**. A multimodal recording also keeps the two individual-model actions.
 4. Wait for inference to finish. Only one inference run is allowed at a time.
 5. Open **Model runs** to view probabilities, events, metrics and artifacts.
 
@@ -357,13 +358,48 @@ dataset, the montage is reconstructed for common-reference recordings, and
 notebook's overlapping-window/random-window split limit generalisation; the
 reported “97%” must not be treated as expected accuracy on a new recording.
 
-### Video and EEG independently
+### Synchronized Video + EEG fusion
 
-Choose **Both independently**, provide one video, one supported EEG file, and a Recording
-ID. Both files are registered under the same catalog entry. Selecting **Both
-independently** on Recordings runs the existing video and EEG models separately
-and displays separate result sections. It does not fuse their predictions and
-does not claim that unrelated inputs are synchronized.
+Choose **Video + EEG**, provide one Nicolet/Natus `.e` recording, one or more
+synchronized AVI/MP4 segments, and a Recording ID. Upload validation reads the
+embedded Nicolet `VIDEOSYNCGUID` table and matching `Video Start` events. Each
+selected video filename must occur in that table; filename sorting or merely
+uploading files under the same ID is not accepted as synchronization proof.
+The AVI/MP4 container supplies each segment's duration and frame rate.
+
+The `.e` recording is the master wall-clock timeline, including real acquisition
+gaps. Each video's local timestamps are translated to global EEG time without
+concatenating the files. The frozen video model runs segment by segment and the
+frozen EEG model keeps its four-second windows with a two-second stride. Video
+probabilities overlapping each EEG window are combined with an overlap-duration
+weighted mean, including windows that cross an AVI boundary.
+
+The initial probability-level formula is:
+
+```text
+fused_probability = 0.80 × eeg_probability + 0.20 × video_probability
+```
+
+The weights, decision threshold (`0.50` by default), and minimum video coverage
+are configurable in `FYPModels/configs/inference.yaml`. The 80/20 weights are an
+engineering baseline, not clinically optimized. Full video coverage is required
+by default. A window without enough synchronized video remains EEG-only: its
+video and fused probabilities are left empty, never replaced by zero.
+
+The fusion result page shows the EEG, aligned video, and fused probabilities on
+the same time axis. Complete traceability is stored in
+`fusion/predictions.csv`, including contributing video segment/window IDs and
+coverage, while `fusion/video_segment_manifest.json` records the verified
+segment mapping. The untrained feature-fusion network is not used.
+
+Automatic multimodal registration currently requires Nicolet `.e` metadata.
+EDF/CSV remain supported for EEG-only inference. A pair whose synchronization
+cannot be verified is refused for fusion, while **Run Video Only** and **Run EEG
+Only** remain available. For a multi-segment recording, **Run Video Only** runs
+the frozen video model over every registered segment and saves a global,
+segment-labelled probability table without invoking the EEG model or fusion.
+Successful execution is research pipeline verification, not evidence of clinical
+validity.
 
 The Docker startup commands are unchanged. Both model dependency sets are in
 the same CPU or CUDA application image. The CUDA setup accelerates the PyTorch

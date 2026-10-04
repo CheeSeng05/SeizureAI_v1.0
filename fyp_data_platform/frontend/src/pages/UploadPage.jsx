@@ -6,7 +6,7 @@ import { Card, Notice, formatBytes } from '../components';
 const modes = [
   { id: 'video', title: 'Video', detail: 'Run the video model only.', icon: FileVideo },
   { id: 'eeg', title: 'EEG', detail: 'Run the EEG model on CSV data or an EDF/Nicolet recording.', icon: Activity },
-  { id: 'unimodal', title: 'Both independently', detail: 'Run video and EEG separately. Results are not fused.', icon: CheckCircle2 },
+  { id: 'fusion', title: 'Video + EEG', detail: 'Register synchronized video segments and one Nicolet EEG recording.', icon: CheckCircle2 },
 ];
 
 function FileChoice({ title, detail, accept, file, inputRef, onChoose, onRemove, icon: Icon }) {
@@ -19,37 +19,55 @@ function FileChoice({ title, detail, accept, file, inputRef, onChoose, onRemove,
   </Card>;
 }
 
+function MultiFileChoice({ files, inputRef, onChoose, onRemove }) {
+  const addFiles = (incoming) => {
+    const merged = [...files];
+    Array.from(incoming || []).forEach((file) => {
+      if (!merged.some((item) => item.name.toLowerCase() === file.name.toLowerCase())) merged.push(file);
+    });
+    onChoose(merged);
+  };
+  return <Card title="Video segments">
+    <div className="compact-dropzone" onClick={() => inputRef.current.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
+      <input ref={inputRef} type="file" hidden multiple accept=".mp4,.avi,.mkv,.mov" onChange={(event) => addFiles(event.target.files)} />
+      <UploadCloud /><strong>{files.length ? 'Add more videos' : 'Choose synchronized videos'}</strong><span>One or more AVI, MP4, MKV or MOV segments</span>
+    </div>
+    {files.map((file) => <div className="selected-label" key={`${file.name}-${file.size}`}><FileVideo /><div><strong>{file.name}</strong><span>{formatBytes(file.size)}</span></div><button type="button" onClick={() => onRemove(file)}><X /></button></div>)}
+  </Card>;
+}
+
 export default function UploadPage() {
   const videoInput = useRef(null); const eegInput = useRef(null); const labelInput = useRef(null);
   const [mode, setMode] = useState('video');
-  const [video, setVideo] = useState(null); const [eeg, setEeg] = useState(null); const [labelFile, setLabelFile] = useState(null);
+  const [video, setVideo] = useState(null); const [videos, setVideos] = useState([]); const [eeg, setEeg] = useState(null); const [labelFile, setLabelFile] = useState(null);
   const [compareLabels, setCompareLabels] = useState(false);
   const [fields, setFields] = useState({ dataset_id: 'ui-recordings', dataset_name: 'UI uploaded recordings', patient_id: 'local-patient-001', recording_id: '', seizure_id: '', seizure_type: '' });
   const [state, setState] = useState({ busy: false, error: null, uploaded: null });
   const needsVideo = mode !== 'eeg'; const needsEeg = mode !== 'video';
   const labelIsCsv = /\.csv$/i.test(labelFile?.name || '');
   const labelReady = !needsVideo || !compareLabels || (labelFile && fields.patient_id && (labelIsCsv || (fields.seizure_id && fields.seizure_type)));
-  const ready = (!needsVideo || video) && (!needsEeg || eeg) && labelReady && (mode !== 'unimodal' || fields.recording_id);
+  const selectedVideos = mode === 'fusion' ? videos : (video ? [video] : []);
+  const ready = (!needsVideo || selectedVideos.length > 0) && (!needsEeg || eeg) && labelReady && (mode !== 'fusion' || fields.recording_id);
   const submit = async () => {
     setState({ busy: true, error: null, uploaded: null });
-    try { setState({ busy: false, error: null, uploaded: await api.upload(mode, video ? [video] : [], eeg, fields, compareLabels ? labelFile : null) }); }
+    try { setState({ busy: false, error: null, uploaded: await api.upload(mode, selectedVideos, eeg, fields, compareLabels ? labelFile : null) }); }
     catch (error) { setState({ busy: false, error, uploaded: null }); }
   };
   return <div className="page narrow">
-    <div className="page-title"><div><p>Data registration</p><h1>Upload recordings</h1><span>Choose which independent model workflows to prepare.</span></div></div>
+    <div className="page-title"><div><p>Data registration</p><h1>Upload recordings</h1><span>Register video, EEG, or a verified synchronized multimodal recording.</span></div></div>
     {state.error && <Notice tone="danger" title="Upload failed"><p>{state.error.message}</p></Notice>}
     {state.uploaded && <Notice title="Upload complete"><p>{state.uploaded.uploaded.length} input file{state.uploaded.uploaded.length === 1 ? '' : 's'} stored and registered successfully.</p></Notice>}
-    <div className="mode-picker">{modes.map(({ id, title, detail, icon: Icon }) => <button type="button" className={mode === id ? 'selected' : ''} key={id} onClick={() => { setMode(id); if (id === 'eeg') { setCompareLabels(false); setLabelFile(null); } }}><Icon /><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>
-    {mode === 'unimodal' && <Notice title="Independent results"><p>Both models will run on the same catalog entry, but their predictions will not be combined or presented as fusion.</p></Notice>}
+    <div className="mode-picker">{modes.map(({ id, title, detail, icon: Icon }) => <button type="button" className={mode === id ? 'selected' : ''} key={id} onClick={() => { setMode(id); if (id === 'eeg' || id === 'fusion') { setCompareLabels(false); setLabelFile(null); } }}><Icon /><span><strong>{title}</strong><small>{detail}</small></span></button>)}</div>
+    {mode === 'fusion' && <Notice title="Synchronization required"><p>The Nicolet .e metadata must identify every selected video segment. Filename order alone is never used as synchronization evidence.</p></Notice>}
     <div className="upload-inputs">
-      {needsVideo && <FileChoice title="Video file" detail="MP4, AVI, MKV or MOV" accept=".mp4,.avi,.mkv,.mov" file={video} inputRef={videoInput} onChoose={setVideo} onRemove={() => setVideo(null)} icon={FileVideo} />}
-      {needsEeg && <FileChoice title="EEG recording or dataset" detail="CSV (X1-X178 + y), EDF, or Nicolet .e" accept=".csv,.edf,.e" file={eeg} inputRef={eegInput} onChoose={setEeg} onRemove={() => setEeg(null)} icon={FileSpreadsheet} />}
+      {needsVideo && (mode === 'fusion' ? <MultiFileChoice files={videos} inputRef={videoInput} onChoose={setVideos} onRemove={(file) => setVideos(videos.filter((item) => item !== file))} /> : <FileChoice title="Video file" detail="MP4, AVI, MKV or MOV" accept=".mp4,.avi,.mkv,.mov" file={video} inputRef={videoInput} onChoose={setVideo} onRemove={() => setVideo(null)} icon={FileVideo} />)}
+      {needsEeg && <FileChoice title="EEG recording or dataset" detail={mode === 'fusion' ? 'Nicolet .e with embedded video synchronization' : 'CSV (X1-X178 + y), EDF, or Nicolet .e'} accept={mode === 'fusion' ? '.e' : '.csv,.edf,.e'} file={eeg} inputRef={eegInput} onChoose={setEeg} onRemove={() => setEeg(null)} icon={FileSpreadsheet} />}
     </div>
     <Card title="Catalog identity">
-      <div className="form-grid">{[['dataset_id', 'Dataset ID'], ['dataset_name', 'Dataset name'], ['patient_id', 'Patient ID'], ['recording_id', `Recording ID${mode === 'unimodal' ? '' : ' (optional)'}`]].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div>
-      {mode === 'unimodal' && <Notice><p>Recording ID is required so the video and EEG files are registered under one entry.</p></Notice>}
-      {needsVideo && <div className={`comparison-option ${compareLabels ? 'enabled' : ''}`}><div><strong>Compare video with ground truth</strong><span>Use timestamped CSV intervals or a matching Label.xlsx workbook.</span></div><label className="switch"><input type="checkbox" checked={compareLabels} onChange={(event) => { setCompareLabels(event.target.checked); if (!event.target.checked) setLabelFile(null); }} /><i /></label></div>}
-      {needsVideo && compareLabels && <div className="comparison-panel"><Notice title={labelIsCsv ? 'Interval label matching' : 'Workbook matching'}><p>{labelIsCsv ? 'CSV labels require start_sec, end_sec and label columns. Seizure ID and type are optional for CSV labels.' : 'Patient ID, Seizure ID and Seizure type must match exactly one row in Label.xlsx.'}</p></Notice><div className="label-upload"><div><strong>Ground-truth labels</strong><span>Required - .csv or .xlsx format</span></div><input ref={labelInput} type="file" hidden accept=".csv,.xlsx" onChange={(event) => setLabelFile(event.target.files[0] || null)} /><button className="button" type="button" onClick={() => labelInput.current.click()}>{labelFile ? 'Replace labels' : 'Choose labels'}</button></div>{labelFile && <div className="selected-label"><CheckCircle2 /><div><strong>{labelFile.name}</strong><span>{formatBytes(labelFile.size)}</span></div><button onClick={() => setLabelFile(null)}><X /></button></div>}{!labelIsCsv && <div className="form-grid label-identity">{[['seizure_id', 'Seizure ID, e.g. Sz2'], ['seizure_type', 'Seizure type, e.g. PG']].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div>}</div>}
+      <div className="form-grid">{[['dataset_id', 'Dataset ID'], ['dataset_name', 'Dataset name'], ['patient_id', 'Patient ID'], ['recording_id', `Recording ID${mode === 'fusion' ? '' : ' (optional)'}`]].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div>
+      {mode === 'fusion' && <Notice><p>Recording ID is required. Upload validation will prove the selected AVI/MP4 filenames against the .e synchronization table before registration.</p></Notice>}
+      {needsVideo && mode !== 'fusion' && <div className={`comparison-option ${compareLabels ? 'enabled' : ''}`}><div><strong>Compare video with ground truth</strong><span>Use timestamped CSV intervals or a matching Label.xlsx workbook.</span></div><label className="switch"><input type="checkbox" checked={compareLabels} onChange={(event) => { setCompareLabels(event.target.checked); if (!event.target.checked) setLabelFile(null); }} /><i /></label></div>}
+      {needsVideo && mode !== 'fusion' && compareLabels && <div className="comparison-panel"><Notice title={labelIsCsv ? 'Interval label matching' : 'Workbook matching'}><p>{labelIsCsv ? 'CSV labels require start_sec, end_sec and label columns. Seizure ID and type are optional for CSV labels.' : 'Patient ID, Seizure ID and Seizure type must match exactly one row in Label.xlsx.'}</p></Notice><div className="label-upload"><div><strong>Ground-truth labels</strong><span>Required - .csv or .xlsx format</span></div><input ref={labelInput} type="file" hidden accept=".csv,.xlsx" onChange={(event) => setLabelFile(event.target.files[0] || null)} /><button className="button" type="button" onClick={() => labelInput.current.click()}>{labelFile ? 'Replace labels' : 'Choose labels'}</button></div>{labelFile && <div className="selected-label"><CheckCircle2 /><div><strong>{labelFile.name}</strong><span>{formatBytes(labelFile.size)}</span></div><button onClick={() => setLabelFile(null)}><X /></button></div>}{!labelIsCsv && <div className="form-grid label-identity">{[['seizure_id', 'Seizure ID, e.g. Sz2'], ['seizure_type', 'Seizure type, e.g. PG']].map(([key, label]) => <label key={key}><span>{label}</span><input value={fields[key]} onChange={(event) => setFields({ ...fields, [key]: event.target.value })} /></label>)}</div>}</div>}
       <button className="button primary full" disabled={!ready || state.busy} onClick={submit}>{state.busy ? 'Uploading...' : <><CheckCircle2 size={17} /> Store and register</>}</button>
     </Card>
   </div>;
