@@ -486,3 +486,15 @@ notes are shared across that patient's recordings within the dataset. New upload
 preserve saved patient metadata. Missing information is shown as not provided.
 The results page prioritises patient information and detected events/windows;
 evaluation against supplied labels and processing details are collapsed by default.
+
+Fusion results use one combined table (10 windows per page) with window duration,
+EEG/video/fusion probabilities, coverage and decision. Select a window to inspect
+Video playback or an EEG waveform above the table. Playback uses the saved video
+segment offsets; overlapping table windows are highlighted. Play selected window
+stops at the available segment boundary. For windows crossing multiple segments,
+choose each overlapping segment from the selector.
+The EEG viewer shows one selectable original channel with a shaded selected window,
+physical units, and surrounding context. Min/max display bins preserve peaks and
+acquisition gaps are not joined. The displayed channel is not the model's processed
+montage. Evidence requires retained run inputs and verified saved video synchronization;
+if these are unavailable, predictions remain accessible without guessed alignment.

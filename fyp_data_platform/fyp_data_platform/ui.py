@@ -823,6 +823,47 @@ def create_app(config_path: str | None = None) -> Any:
             except Exception as error:
                 return jsonify({"error": str(error)}), 500
 
+    @app.get('/api/runs/<run_id>/evidence')
+    @app.get('/api/runs/<run_id>/evidence/eeg')
+    @app.get('/api/runs/<run_id>/evidence/video/<int:index>/preview')
+    @app.get('/api/runs/<run_id>/evidence/video/<int:index>/media')
+    def run_evidence(run_id, index=None):
+        from .evidence import evidence_sources, input_path, waveform
+        # Also prevents deletion of retained inputs while evidence is being read.
+        with previews.lock, session_factory() as session:
+            row = session.get(ModelRun, run_id)
+            if row is None:
+                return jsonify({'error': 'Unknown model run.'}), 404
+            config = row.config_json or {}
+            parent = session.get(Recording, f"{config.get('dataset_id')}::{config.get('recording_id')}")
+            if row.deleting or (parent and parent.deleting):
+                return jsonify({'error': 'Recording deletion is in progress.'}), 409
+            data = config.get('config', {}).get('data', {})
+            try:
+                sources = evidence_sources(settings, row)
+                if request.path.endswith('/eeg'):
+                    path = input_path(settings, row, data.get('eeg_file'))
+                    payload = waveform(path, float(request.args.get('start', '0')), float(request.args.get('end', '12')), int(request.args.get('channel', '0')))
+                    return jsonify(payload)
+                if index is not None:
+                    if not any(item['input_index'] == index for item in sources['videos']):
+                        return jsonify({'error': 'Verified video evidence is unavailable.'}), 404
+                    source = input_path(settings, row, data['video_segments'][index])
+                    stamp = source.stat()
+                    destination = previews.path(config['dataset_id'], config['recording_id'], str(source), f'{stamp.st_size}:{stamp.st_mtime_ns}')
+                    if request.path.endswith('/media'):
+                        if not destination.is_file():
+                            return jsonify({'error': 'Preview is not ready.'}), 409
+                        return send_file(destination, mimetype='video/mp4', conditional=True, max_age=3600)
+                    state = previews.ensure(destination, str(source), source_path=source)
+                    return jsonify({**state, 'url': f'/api/runs/{run_id}/evidence/video/{index}/media' if state['status'] == 'ready' else None})
+                return jsonify(sources)
+            except (ValueError, TypeError, IndexError) as error:
+                return jsonify({'error': str(error)}), 400
+            except Exception:
+                app.logger.exception('Evidence could not be loaded')
+                return jsonify({'error': 'Could not read the retained evidence for this run.'}), 422
+
     @app.get('/api/runs/<run_id>/preview')
     @app.get('/api/runs/<run_id>/preview-video')
     def run_preview(run_id):

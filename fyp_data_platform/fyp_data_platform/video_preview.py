@@ -26,7 +26,7 @@ class VideoPreviews:
         identity = hashlib.sha256(f'v1:{key}:{digest}'.encode()).hexdigest()
         return self.work_root / safe_entity(dataset) / safe_entity(recording) / 'browser-preview' / f'{identity}.mp4'
 
-    def ensure(self, destination, key):
+    def ensure(self, destination, key, source_path=None):
         destination = Path(destination)
         with self.lock:
             if destination.is_file() and destination.stat().st_size:
@@ -37,16 +37,19 @@ class VideoPreviews:
             if not shutil.which('ffmpeg'):
                 return {'status': 'failed', 'error': 'Video preview requires FFmpeg. Rebuild the updated app image.'}
             self.jobs[destination] = {'status': 'preparing'}
-            self.executor.submit(self._convert, destination, key)
+            self.executor.submit(self._convert, destination, key, source_path)
             return {'status': 'preparing'}
 
-    def _convert(self, destination, key):
+    def _convert(self, destination, key, source_path=None):
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=destination.parent) as directory:
                 original = Path(directory) / ('source' + Path(key).suffix)
                 output = Path(directory) / 'preview.mp4'
-                self.storage.download_file(key, original)
+                if source_path is not None:
+                    shutil.copy2(source_path, original)
+                else:
+                    self.storage.download_file(key, original)
                 subprocess.run([
                     'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
                     '-threads', '2', '-i', str(original), '-map', '0:v:0', '-an',
