@@ -21,3 +21,24 @@
 .eeg-evidence-chart { display: block; width: 100%; min-height: 220px; color: #94a3b8; background: #0b1220; }
 .timeline-table .selected-window { background: rgba(37,99,235,.16); }
 .timeline-table .playing-window { box-shadow: inset 4px 0 #fbbf24; }
+.eeg-channel-stack { max-height: 720px; overflow-y: auto; border: 1px solid #334155; border-radius: .5rem; padding: .75rem; }
+.eeg-channel-stack .eeg-channel-row { padding: .5rem 0; border-bottom: 1px solid #334155; }
+.eeg-channel-stack .eeg-evidence-chart { height: 180px; min-height: 180px; }
+.timeline-time-picker { display: flex; align-items: end; gap: .5rem; border: 1px solid #334155; border-radius: .5rem; padding: .5rem .75rem; }
+.timeline-time-picker input { width: 7rem; }
+.timeline-time-picker select, .timeline-search > label select { padding: .65rem; font: inherit; }
+/* Keep recording actions aligned independently of label and filename length. */
+.recordings-table { table-layout: fixed; min-width: 1160px; }
+.recordings-table .recording-column { width: 170px; }
+.recordings-table .dataset-column { width: 125px; }
+.recordings-table .labels-column { width: 125px; }
+.recordings-table .stored-column { width: 155px; }
+.recordings-table .actions-column { width: 260px; }
+.recordings-table td { vertical-align: top; overflow-wrap: anywhere; line-height: 1.5; padding-top: 20px; padding-bottom: 20px; }
+.recordings-table .recording-identity > strong { margin-bottom: 10px; }
+.recordings-table .run-actions { display: flex; flex-direction: column; align-items: stretch; gap: 10px; width: 100%; }
+.recordings-table .run-actions > .button { display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; min-height: 44px; height: auto; margin: 0; padding: 10px 12px; font-size: 13px; line-height: 1.5; text-align: left; white-space: normal; }
+.recordings-table .run-actions > .button svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.recordings-table .run-actions > small { text-align: left; }
+.recordings-table .modality-files { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; }
+.recordings-table .modality-files > span { width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }

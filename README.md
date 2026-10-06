@@ -498,3 +498,16 @@ physical units, and surrounding context. Min/max display bins preserve peaks and
 acquisition gaps are not joined. The displayed channel is not the model's processed
 montage. Evidence requires retained run inputs and verified saved video synchronization;
 if these are unavailable, predictions remain accessible without guessed alignment.
+
+In the EEG waveform viewer, choose All channels in the EEG channel selector to
+stack all channels exposed by the recording loader for the selected interval.
+Each labelled trace has its own amplitude scale and units; the selected window
+and playback cursor share the same time axis across channels. Scroll inside the
+viewer to inspect the remaining channels, or select one channel for a larger view.
+
+Combined prediction windows can be filtered by All decisions, Possible seizure,
+No detection, or EEG only. From/To controls accept elapsed minutes and seconds;
+minutes can exceed 59 for longer recordings. Decision filters apply immediately,
+and Search time applies the selected time range. Clear resets both filters.
+Video evidence reads synchronization from the saved video_segment_manifest.json
+artifact, including for existing runs that do not embed it in metrics.

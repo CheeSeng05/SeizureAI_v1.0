@@ -7,15 +7,24 @@ async function read(url, signal) {
   return data;
 }
 function EEGWaveform({ runId, selected, playhead }) {
-  const [channel, setChannel] = useState(0); const [data, setData] = useState(null); const [error, setError] = useState('');
+  const [channel, setChannel] = useState('0'); const [data, setData] = useState(null); const [error, setError] = useState('');
+  const [names, setNames] = useState([]);
   const start = Math.max(0, selected.start_sec - 4); const end = Math.min(start + 30, selected.end_sec + 4);
   useEffect(() => {
     const controller = new AbortController(); setData(null); setError('');
-    read(`/api/runs/${runId}/evidence/eeg?start=${start}&end=${end}&channel=${channel}`, controller.signal).then(setData).catch(error => { if (error.name !== 'AbortError') setError(error.message); });
+    read(`/api/runs/${runId}/evidence/eeg?start=${start}&end=${end}&channel=${channel}`, controller.signal).then(value => { setData(value); setNames(value.channel_names); }).catch(error => { if (error.name !== 'AbortError') setError(error.message); });
     return () => controller.abort();
   }, [runId, start, end, channel]);
-  if (error) return <p role="alert">{error}</p>;
-  if (!data) return <p role="status">Loading EEG samples…</p>;
+  return <div>
+    <label>EEG channel <select value={channel} onChange={event => setChannel(event.target.value)}><option value="all">All channels</option>{names.length ? names.map((name, index) => <option value={String(index)} key={index}>{name}</option>) : <option value="0">Channel 1</option>}</select></label>
+    <p>Original recorded channels, not the model's processed montage. Each trace has its own labelled amplitude scale. Min/max display bins preserve peaks.</p>
+    {error ? <p role="alert">{error}</p> : !data ? <p role="status">Loading {channel === 'all' ? 'all EEG channels' : 'EEG samples'}…</p> : <div className={channel === 'all' ? 'eeg-channel-stack' : ''} role="region" aria-label={channel === 'all' ? 'All EEG channels, scroll to view more' : 'EEG trace'} tabIndex={channel === 'all' ? 0 : undefined}>
+      {(data.channels || [data]).map(trace => <div className="eeg-channel-row" key={trace.channel}><EEGTrace data={trace} selected={selected} playhead={playhead} start={start} end={end} /></div>)}
+    </div>}
+    <p>Blue shading marks the same selected prediction window on every channel. Blank intervals have no recorded samples.{channel === 'all' && ' Scroll within the viewer to see all channels.'}</p>
+  </div>;
+}
+function EEGTrace({ data, selected, playhead, start, end }) {
   const points = data.traces.flat();
   const low = points.reduce((value, point) => Math.min(value, point[1]), Infinity);
   const high = points.reduce((value, point) => Math.max(value, point[2]), -Infinity);
@@ -23,16 +32,16 @@ function EEGWaveform({ runId, selected, playhead }) {
   const x = time => 60 + 900 * (time - start) / (end - start);
   const y = value => 210 - 170 * (value - low) / span;
   return <div>
-    <label>EEG channel <select value={channel} onChange={event => setChannel(Number(event.target.value))}>{data.channel_names.map((name, index) => <option value={index} key={index}>{name}</option>)}</select></label>
-    <p>Original recorded channel · {data.unit} · {data.sampling_rate} Hz. Display uses min/max bins to preserve peaks; it is not the model's processed montage. Amplitude scale adjusts per view.</p>
-    {!points.length ? <Empty title="No EEG samples in this interval">The recording may contain an acquisition gap.</Empty> : <svg viewBox="0 0 1000 270" role="img" aria-label={`EEG channel ${data.channel_names[channel]}, selected window ${selected.start_sec} to ${selected.end_sec} seconds`} className="eeg-evidence-chart">
+    <strong>{data.name || data.channel_names?.[data.channel]} · {data.unit} · {data.sampling_rate} Hz</strong>
+
+    {!points.length ? <Empty title="No EEG samples in this interval">The recording may contain an acquisition gap.</Empty> : <svg viewBox="0 0 1000 270" role="img" aria-label={`EEG channel ${data.name || data.channel_names?.[data.channel]}, selected window ${selected.start_sec} to ${selected.end_sec} seconds`} className="eeg-evidence-chart">
       <rect x={x(selected.start_sec)} y="25" width={Math.max(0, x(Math.min(end, selected.end_sec)) - x(selected.start_sec))} height="195" fill="#2563eb" opacity="0.22" />
       {data.traces.map((trace, index) => <g key={index}><polyline points={trace.map(([time, min, max]) => [x(time), y((min + max) / 2)].join(',')).join(' ')} fill="none" stroke="#38bdf8" strokeWidth="1" /><path d={trace.map(([time, min, max]) => `M${x(time)},${y(min)}L${x(time)},${y(max)}`).join(' ')} fill="none" stroke="#38bdf8" strokeWidth="1.2" /></g>)}
       {playhead != null && playhead >= start && playhead <= end && <line x1={x(playhead)} x2={x(playhead)} y1="25" y2="220" stroke="#fbbf24" strokeWidth="2" />}
       <text x="5" y="45" fill="currentColor" fontSize="13">{high.toFixed(1)}</text><text x="5" y="212" fill="currentColor" fontSize="13">{low.toFixed(1)}</text>
       {[0,1,2,3,4].map(index => <text key={index} x={x(start + (end-start)*index/4)} y="250" textAnchor="middle" fill="currentColor" fontSize="14">{formatTime(start + (end-start)*index/4)}</text>)}
     </svg>}
-    <p>Blue shading: selected prediction window. Blank intervals have no recorded samples.</p>
+
   </div>;
 }
 function VideoEvidence({ runId, selected, videos, onTime }) {

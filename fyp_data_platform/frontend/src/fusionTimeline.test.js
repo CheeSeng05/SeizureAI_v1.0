@@ -20,3 +20,20 @@ test('search includes overlapping windows and excludes touching boundaries', () 
   assert.deepEqual(timelinePage(windows, 0, { start: 4, end: 6 }).rows, windows.slice(1,3));
   assert.equal(timelinePage(windows, 0, { end: 2 }).rows.length, 1);
 });
+
+import { pickerSeconds, windowDecision } from './fusionTimeline.js';
+test('decision and time filters compose before pagination', () => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({ start_sec: index*2, end_sec: index*2+4, fusion_available: index % 3 !== 0, fused_prediction: index % 3 === 1 ? 1 : 0 }));
+  assert.equal(timelinePage(rows, 0, { decision: 'positive' }).total, 10);
+  assert.ok(timelinePage(rows, 0, { decision: 'eeg-only' }).rows.every(row => !row.fusion_available));
+  assert.equal(timelinePage(rows, 5, { decision: 'negative', start: 20, end: 30 }).current, 0);
+  assert.ok(timelinePage(rows, 0, { decision: 'negative', start: 20, end: 30 }).rows.every(row => windowDecision(row) === 'negative' && row.end_sec > 20 && row.start_sec < 30));
+});
+test('minute and second picker handles empty boundaries and long recordings', () => {
+  assert.equal(pickerSeconds('', ''), null);
+  assert.equal(pickerSeconds('120', '30'), 7230);
+  assert.equal(pickerSeconds('', '0'), 0);
+  assert.equal(pickerSeconds('1', ''), 60);
+  assert.ok(Number.isNaN(pickerSeconds('-1', '0')));
+  assert.ok(Number.isNaN(pickerSeconds('0', '60')));
+});

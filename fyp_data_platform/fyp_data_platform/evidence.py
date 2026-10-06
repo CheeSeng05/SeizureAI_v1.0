@@ -1,5 +1,7 @@
 """Read-only evidence from retained, run-specific inputs on the recording clock."""
 import math
+import json
+import tempfile
 from pathlib import Path
 import numpy as np
 from .storage.keys import safe_entity
@@ -14,10 +16,21 @@ def input_path(settings, row, value):
     return path
 
 
-def evidence_sources(settings, row):
+def evidence_sources(settings, row, storage=None):
     data = (row.config_json or {}).get('config', {}).get('data', {})
     documents = (row.metrics_json or {}).get('metrics', {})
     manifest = next((doc for key, doc in documents.items() if str(key).endswith('video_segment_manifest.json') and isinstance(doc, dict)), {})
+    # Synchronization is a separate artifact, not a *metrics.json document.
+    artifacts = (row.metrics_json or {}).get('artifacts', [])
+    artifact = next((item for item in artifacts if item.get('relative_path') == 'fusion/video_segment_manifest.json'), None)
+    if artifact is None:
+        artifact = next((item for item in artifacts if str(item.get('relative_path', '')).endswith('/video_segment_manifest.json') or item.get('relative_path') == 'video_segment_manifest.json'), None)
+    if artifact and storage is not None:
+        with tempfile.TemporaryDirectory(prefix='fusion-evidence-') as directory:
+            destination = Path(directory) / 'manifest.json'
+            storage.download_file(artifact['key'], destination)
+            with destination.open(encoding='utf-8') as handle:
+                manifest = json.load(handle)
     paths = data.get('video_segments') or []
     videos = []
     if manifest.get('sync_verified'):
@@ -44,31 +57,40 @@ def waveform(path, start, end, channel):
         raise ValueError('Choose an EEG interval of at most 30 seconds.')
     with load_eeg(path) as recording:
         meta = recording.metadata
-        if not 0 <= channel < len(meta.channel_names):
+        indices = list(range(len(meta.channel_names))) if channel == 'all' else [channel]
+        if not indices or any(type(index) is not int or not 0 <= index < len(meta.channel_names) for index in indices):
             raise ValueError('Unknown EEG channel.')
-        rate = float(meta.sampling_rates[channel])
-        if not math.isfinite(rate) or rate <= 0 or rate > 100000:
-            raise ValueError('Unsupported EEG sampling rate.')
-        segments = meta.extra.get('timeline_segments') or [{'global_start_sec': 0, 'global_end_sec': meta.duration_sec, 'source_sample_start': 0, 'source_sample_stop': int(meta.duration_sec * rate)}]
-        traces = []
-        for segment in segments:
-            origin = float(segment['global_start_sec'])
-            left, right = max(start, origin), min(end, float(segment['global_end_sec']))
-            if right <= left:
-                continue
-            offset = int(segment['source_sample_start'])
-            first = max(offset, offset + math.ceil((left - origin) * rate - 1e-7))
-            last = min(int(segment['source_sample_stop']), offset + math.ceil((right - origin) * rate - 1e-7))
-            if last <= first:
-                continue
-            values = recording.read_samples(channel_indices=[channel], start_sample=first, stop_sample=last)[0]
-            if not np.isfinite(values).all():
-                raise ValueError('EEG samples contain non-finite values.')
-            # Min/max bins preserve peaks; gaps stay separate rather than being joined.
-            stride = max(1, math.ceil(rate * (end - start) / 1000))
-            points = []
-            for index in range(0, len(values), stride):
-                chunk = values[index:index + stride]
-                points.append([origin + (first - offset + index) / rate, float(chunk.min()), float(chunk.max())])
-            traces.append(points)
-        return {'start_sec': start, 'end_sec': end, 'channel': channel, 'channel_names': list(meta.channel_names), 'unit': meta.signal_units[channel] or 'unknown units', 'sampling_rate': rate, 'traces': traces}
+        groups = {}
+        channels = {}
+        for index in indices:
+            rate = float(meta.sampling_rates[index])
+            if not math.isfinite(rate) or rate <= 0 or rate > 100000:
+                raise ValueError('Unsupported EEG sampling rate.')
+            groups.setdefault(rate, []).append(index)
+            channels[index] = {'channel': index, 'name': meta.channel_names[index], 'unit': meta.signal_units[index] or 'unknown units', 'sampling_rate': rate, 'traces': []}
+        for rate, group in groups.items():
+            segments = meta.extra.get('timeline_segments') or [{'global_start_sec': 0, 'global_end_sec': meta.duration_sec, 'source_sample_start': 0, 'source_sample_stop': int(meta.duration_sec * rate)}]
+            for segment in segments:
+                origin = float(segment['global_start_sec'])
+                left, right = max(start, origin), min(end, float(segment['global_end_sec']))
+                if right <= left:
+                    continue
+                offset = int(segment['source_sample_start'])
+                first = max(offset, offset + math.ceil((left - origin) * rate - 1e-7))
+                last = min(int(segment['source_sample_stop']), offset + math.ceil((right - origin) * rate - 1e-7))
+                if last <= first:
+                    continue
+                values = recording.read_samples(channel_indices=group, start_sample=first, stop_sample=last)
+                if not np.isfinite(values).all():
+                    raise ValueError('EEG samples contain non-finite values.')
+                stride = max(1, math.ceil(rate * (end - start) / 1000))
+                for position, index in enumerate(group):
+                    points = []
+                    for sample in range(0, values.shape[1], stride):
+                        chunk = values[position, sample:sample + stride]
+                        points.append([origin + (first - offset + sample) / rate, float(chunk.min()), float(chunk.max())])
+                    channels[index]['traces'].append(points)
+        payload = {'start_sec': start, 'end_sec': end, 'channel_names': list(meta.channel_names)}
+        if channel == 'all':
+            return {**payload, 'channel': 'all', 'channels': [channels[index] for index in indices]}
+        return {**payload, **channels[channel]}

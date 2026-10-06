@@ -87,3 +87,41 @@ def test_verified_video_preview_uses_retained_run_segment(settings, migrated_db,
     assert response.status_code == 206
     assert b'ftyp' in response.data
     assert video.read_bytes() == original
+
+
+def test_all_channels_preserves_signals_units_and_batches_matching_rates(monkeypatch):
+    from seizure_multimodal.eeg import loaders
+    calls = []
+    class Recording:
+        metadata = SimpleNamespace(channel_names=('Fp1', 'Fp2', 'ECG'), sampling_rates=(10, 10, 5), signal_units=('uV', 'uV', 'mV'), duration_sec=4, extra={})
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read_samples(self, **kwargs):
+            calls.append(kwargs)
+            return np.stack([np.arange(kwargs['start_sample'], kwargs['stop_sample'], dtype=float) + index * 100 for index in kwargs['channel_indices']])
+    monkeypatch.setattr(loaders, 'load_eeg', lambda _: Recording())
+    data = waveform('unused', 1, 3, 'all')
+    assert [call['channel_indices'] for call in calls] == [[0, 1], [2]]
+    assert [item['name'] for item in data['channels']] == ['Fp1', 'Fp2', 'ECG']
+    assert data['channels'][0]['traces'][0][0] == [1, 10, 10]
+    assert data['channels'][1]['traces'][0][0] == [1, 110, 110]
+    assert data['channels'][2]['traces'][0][0] == [1, 205, 205]
+    assert data['channels'][2]['unit'] == 'mV'
+    assert waveform('unused', 1, 3, 1)['traces'] == data['channels'][1]['traces']
+
+
+def test_manifest_artifact_is_loaded_when_metrics_do_not_contain_it(tmp_path):
+    import json
+    from fyp_data_platform.storage.local import LocalStorage
+    root = tmp_path / 'd' / 'r' / 'run' / 'inputs'
+    root.mkdir(parents=True)
+    video = root / 'one.avi'; video.write_bytes(b'video')
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps({'sync_verified': True, 'segments': [{'filename': 'one.avi', 'sync_verified': True, 'global_start_sec': 12.5, 'global_end_sec': 20.5}]}))
+    storage = LocalStorage(tmp_path / 'objects')
+    storage.put_file(manifest, 'saved/manifest.json')
+    row = SimpleNamespace(id='run', config_json={'dataset_id': 'd', 'recording_id': 'r', 'config': {'data': {'video_segments': [str(video)]}}}, metrics_json={'metrics': {'fusion/metrics.json': {}}, 'artifacts': [{'relative_path': 'fusion/video_segment_manifest.json', 'key': 'saved/manifest.json'}]})
+    sources = evidence_sources(SimpleNamespace(work_root=tmp_path), row, storage)
+    assert len(sources['videos']) == 1
+    assert sources['videos'][0]['global_start_sec'] == 12.5
+    assert sources['videos'][0]['input_index'] == 0

@@ -840,10 +840,10 @@ def create_app(config_path: str | None = None) -> Any:
                 return jsonify({'error': 'Recording deletion is in progress.'}), 409
             data = config.get('config', {}).get('data', {})
             try:
-                sources = evidence_sources(settings, row)
+                sources = evidence_sources(settings, row, storage)
                 if request.path.endswith('/eeg'):
                     path = input_path(settings, row, data.get('eeg_file'))
-                    payload = waveform(path, float(request.args.get('start', '0')), float(request.args.get('end', '12')), int(request.args.get('channel', '0')))
+                    payload = waveform(path, float(request.args.get('start', '0')), float(request.args.get('end', '12')), 'all' if request.args.get('channel') == 'all' else int(request.args.get('channel', '0')))
                     return jsonify(payload)
                 if index is not None:
                     if not any(item['input_index'] == index for item in sources['videos']):
