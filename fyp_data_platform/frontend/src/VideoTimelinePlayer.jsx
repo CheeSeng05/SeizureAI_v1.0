@@ -14,7 +14,7 @@ function overlaps(event, start, end) {
   return event.start_sec <= start && event.end_sec >= start;
 }
 
-export default function VideoTimelinePlayer({ source, windows = [], events = [], groundTruth = {}, duration: suppliedDuration, threshold = 0.5, pending = false }) {
+export default function VideoTimelinePlayer({ source, windows = [], events = [], groundTruth = {}, duration: suppliedDuration, threshold = 0.5, pending = false, showProbability = false }) {
   const videoRef = useRef(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(suppliedDuration || 0);
@@ -70,9 +70,12 @@ export default function VideoTimelinePlayer({ source, windows = [], events = [],
   const zoomToSelected = () => { if (!selected) return; const start = Math.max(0, (selected.start_sec ?? selected.time) - 10); const end = Math.min(duration, (selected.end_sec ?? selected.time) + 10); setViewRange({ start, end: Math.max(end, start + 1) }); };
 
   if (!source) return <Empty title="Source video unavailable">The original video is no longer registered for this run.</Empty>;
+  const playbackWindow = windows.find(window => currentTime >= window.start_sec && currentTime < window.end_sec);
+  const playbackProbability = playbackWindow?.probability;
   return <div className="video-analysis">
     <div className="video-layout">
       <div className="video-frame">
+        {showProbability && <div className="playback-probability"><strong>Video seizure probability: {pending ? 'Pending' : playbackProbability != null && Number.isFinite(Number(playbackProbability)) ? percent(Number(playbackProbability)) : 'Unavailable'}</strong>{!pending && playbackWindow && <span>Window {formatTime(playbackWindow.start_sec)}–{formatTime(playbackWindow.end_sec)}</span>}</div>}
         <div className="skeleton-stage">
         {playbackUrl ? <video ref={videoRef} controls preload="metadata" src={playbackUrl} onLoadedMetadata={(event) => setVideoDuration(event.currentTarget.duration)} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} onError={() => { if (needsPreview) setPreview({ status: 'failed', error: 'Your browser could not decode the preview. Download the original video below.' }); else setPlaybackError(true); }} /> : <Notice tone={preview?.status === 'failed' ? 'danger' : undefined} title={preview?.status === 'failed' ? 'Browser preview unavailable' : 'Preparing video preview'}><p>{preview?.error || 'Creating a browser-compatible viewing copy. This page updates automatically; the original video and model input stay unchanged.'}</p></Notice>}
         {playbackUrl && (!pending || source.pose_url) && <SkeletonOverlay videoRef={videoRef} url={source.pose_url} />}

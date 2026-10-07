@@ -125,3 +125,17 @@ def test_manifest_artifact_is_loaded_when_metrics_do_not_contain_it(tmp_path):
     assert len(sources['videos']) == 1
     assert sources['videos'][0]['global_start_sec'] == 12.5
     assert sources['videos'][0]['input_index'] == 0
+
+
+def test_fusion_pose_urls_match_each_segment(tmp_path):
+    root = tmp_path / 'd' / 'r' / 'run' / 'inputs'
+    root.mkdir(parents=True)
+    paths, segments = [], []
+    for index in range(3):
+        path = root / f'{index}.avi'; path.write_bytes(b'video'); paths.append(str(path))
+        segments.append({'segment_id': f'seg-{index}', 'filename': path.name, 'sync_verified': True, 'global_start_sec': index*10, 'global_end_sec': index*10+10})
+    row = SimpleNamespace(id='run', config_json={'dataset_id': 'd', 'recording_id': 'r', 'config': {'data': {'video_segments': paths}}}, metrics_json={'metrics': {'fusion/video_segment_manifest.json': {'sync_verified': True, 'segments': segments}}, 'artifacts': [{'relative_path': f'fusion/video_segments/seg-{index}/video_only/pose_keypoints.json'} for index in range(2)]})
+    videos = evidence_sources(SimpleNamespace(work_root=tmp_path), row)['videos']
+    assert videos[0]['pose_url'] == '/api/runs/run/artifacts/fusion/video_segments/seg-0/video_only/pose_keypoints.json'
+    assert videos[1]['pose_url'].endswith('/seg-1/video_only/pose_keypoints.json')
+    assert videos[2]['pose_url'] is None

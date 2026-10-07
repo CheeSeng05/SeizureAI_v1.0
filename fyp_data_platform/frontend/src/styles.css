@@ -42,3 +42,8 @@
 .recordings-table .run-actions > small { text-align: left; }
 .recordings-table .modality-files { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; }
 .recordings-table .modality-files > span { width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.playback-probability { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; padding: .85rem 1rem; background: #0f172a; color: #e2e8f0; }
+.playback-probability span { color: #94a3b8; }
+.skeleton-stage .evidence-video { object-fit: contain; margin-bottom: 0; }
+.playback-clock { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; padding: .75rem 0; }
+.playback-clock small { flex-basis: 100%; }

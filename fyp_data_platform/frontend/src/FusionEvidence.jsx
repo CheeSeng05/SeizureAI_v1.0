@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Empty, formatTime } from './components';
+import SkeletonOverlay from './SkeletonOverlay';
+import { videoWindowInterval, preciseTime } from './fusionTimeline';
 
 async function read(url, signal) {
   const response = await fetch(url, { signal }); const data = await response.json();
@@ -48,39 +50,46 @@ function VideoEvidence({ runId, selected, videos, onTime }) {
   const overlapping = videos.filter(video => video.global_end_sec > selected.start_sec && video.global_start_sec < selected.end_sec);
   const [choice, setChoice] = useState(null);
   const segment = overlapping.find(video => video.input_index === choice) || overlapping[0];
+  const [localTime, setLocalTime] = useState(null);
+  const interval = segment ? videoWindowInterval(selected, segment) : null;
   const [preview, setPreview] = useState(null); const [error, setError] = useState(''); const ref = useRef(null); const playingWindow = useRef(false);
   useEffect(() => {
     setPreview(null); setError('');
-    if (!segment) return;
+    if (!segment || !interval) return;
     const controller = new AbortController(); let timer;
     async function poll() {
       try {
         const state = await read(`/api/runs/${runId}/evidence/video/${segment.input_index}/preview`, controller.signal);
-        setPreview(state);
+        setPreview({ ...state, segmentIndex: segment.input_index });
         if (state.status === 'preparing' && !controller.signal.aborted) timer = setTimeout(poll, 2000);
       } catch (error) { if (error.name !== 'AbortError') setError(error.message); }
     }
     poll(); return () => { controller.abort(); clearTimeout(timer); };
   }, [runId, segment?.input_index]);
   const seek = () => {
-    if (!ref.current || !segment) return;
+    if (!ref.current || !interval || ref.current.readyState < 1) return;
     ref.current.pause(); playingWindow.current = false;
-    ref.current.currentTime = Math.max(0, selected.start_sec - segment.global_start_sec);
-    onTime(Math.max(selected.start_sec, segment.global_start_sec));
+    ref.current.currentTime = interval.localStart;
+    setLocalTime(interval.localStart); onTime(interval.start);
   };
   useEffect(seek, [selected, segment?.input_index]);
-  if (!segment) return <Empty title="No synchronized video for this window">No retained video segment overlaps this interval. EEG evidence may still be available.</Empty>;
-  const left = Math.max(selected.start_sec, segment.global_start_sec); const right = Math.min(selected.end_sec, segment.global_end_sec);
+  if (!segment || !interval) return <Empty title="No synchronized video for this window">No retained video segment overlaps this interval. EEG evidence may still be available.</Empty>;
+  const { start: left, end: right } = interval;
   return <div>
     {overlapping.length > 1 && <label>Video segment <select value={segment.input_index} onChange={event => setChoice(Number(event.target.value))}>{overlapping.map(video => <option key={video.input_index} value={video.input_index}>{video.filename}</option>)}</select></label>}
     <p>{segment.filename} · Recording time {formatTime(left)}–{formatTime(right)} ({(right-left).toFixed(2)} seconds available in this segment)</p>
-    {error || preview?.status === 'failed' ? <p role="alert">{error || preview.error}</p> : preview?.status !== 'ready' ? <p role="status">Preparing browser video…</p> : <>
-      <video ref={ref} src={preview.url} controls preload="metadata" className="evidence-video" onLoadedMetadata={seek} onError={() => setError('The browser could not play this video preview.')} onTimeUpdate={() => {
-        const time = ref.current.currentTime + segment.global_start_sec; onTime(time);
-        if (playingWindow.current && time >= right) { ref.current.pause(); playingWindow.current = false; }
+    {error || preview?.status === 'failed' ? <p role="alert">{error || preview.error}</p> : preview?.status !== 'ready' || preview.segmentIndex !== segment.input_index ? <p role="status">Preparing browser video…</p> : <>
+      <div className="playback-clock"><strong>EEG recording time: {preciseTime(localTime == null ? left : localTime + Number(segment.global_start_sec))}</strong><span>Video-file time: {preciseTime(localTime ?? interval.localStart)}</span><small>This video starts at EEG time {preciseTime(Number(segment.global_start_sec))}. Its built-in controls show video-file time. Selected video interval: {preciseTime(interval.localStart)}–{preciseTime(interval.localEnd)}.</small></div>
+      <div className="skeleton-stage" key={segment.input_index}>
+      <video ref={ref} src={preview.url} controls preload="metadata" className="evidence-video" onLoadedMetadata={seek} onError={() => setError('The browser could not play this video preview.')} onTimeUpdate={(event) => {
+        const video = event.currentTarget; if (video.seeking) return;
+        const time = video.currentTime + Number(segment.global_start_sec); setLocalTime(video.currentTime); onTime(time);
+        if (playingWindow.current && time >= right) { playingWindow.current = false; video.pause(); video.currentTime = interval.localEnd; setLocalTime(interval.localEnd); onTime(right); }
       }} />
+      <SkeletonOverlay key={segment.input_index} videoRef={ref} url={segment.pose_url} />
+      </div>
       <button type="button" className="button" onClick={() => { seek(); playingWindow.current = true; ref.current.play().catch(error => setError(error.message)); }}>Play selected window</button>
-      <p>Playback is mapped to the EEG recording clock. Highlighted table rows overlap the current playback time.</p>
+      <p>The selected table row remains selected. Other overlapping prediction windows are not marked as the selected playback window.</p>
     </>}
   </div>;
 }
@@ -90,7 +99,7 @@ export default function FusionEvidence({ runId, selected, playhead, onTime }) {
   return <section className="fusion-evidence">
     <h3>Evidence for the selected window</h3>
     <div className="timeline-tabs" role="tablist" aria-label="Evidence type">{['video', 'eeg'].map((value, index) => <button className="button" type="button" role="tab" id={`evidence-tab-${value}`} aria-selected={value === tab} aria-controls="evidence-panel" tabIndex={value === tab ? 0 : -1} key={value} onClick={() => setTab(value)} onKeyDown={event => { if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 'video' : event.key === 'End' ? 'eeg' : index ? 'video' : 'eeg'; setTab(next); document.getElementById(`evidence-tab-${next}`)?.focus(); } }}>{value === 'video' ? 'Video playback' : 'EEG waveform'}</button>)}</div>
-    <p>Selected: <strong>{formatTime(selected.start_sec)}–{formatTime(selected.end_sec)}</strong> · {(selected.end_sec-selected.start_sec).toFixed(2)} seconds{playhead != null && ` · Playback: ${formatTime(playhead)}`}</p>
+    <p>Selected: <strong>{formatTime(selected.start_sec)}–{formatTime(selected.end_sec)}</strong> · {(selected.end_sec-selected.start_sec).toFixed(2)} seconds{playhead != null && ` · EEG playback time: ${preciseTime(playhead)}`}</p>
     <div role="tabpanel" id="evidence-panel" aria-labelledby={`evidence-tab-${tab}`} tabIndex="0">
       {error ? <p role="alert">{error}</p> : !sources ? <p role="status">Loading evidence sources…</p> : tab === 'video' ? <VideoEvidence runId={runId} selected={selected} videos={sources.videos} onTime={onTime} /> : sources.eeg_available ? <EEGWaveform runId={runId} selected={selected} playhead={playhead} /> : <Empty title="EEG waveform unavailable">The raw EEG input for this run is not retained. Predictions remain available below.</Empty>}
     </div>

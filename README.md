@@ -511,3 +511,15 @@ minutes can exceed 59 for longer recordings. Decision filters apply immediately,
 and Search time applies the selected time range. Clear resets both filters.
 Video evidence reads synchronization from the saved video_segment_manifest.json
 artifact, including for existing runs that do not embed it in metrics.
+
+Fusion video evidence offers Show skeleton and Fullscreen with overlay using the
+selected segment's saved pose_keypoints.json and segment-local playback time.
+If a segment has no saved pose data, the toggle is unavailable. Video-only playback
+shows the current window's seizure probability above the player; fusion playback
+does not show a probability banner.
+
+Fusion playback labels EEG recording time separately from video-file time, including
+fractional-second segment offsets. Only the selected row is marked as the selected
+playback window; overlapping neighbouring windows are not marked as selected.
+The video control clock remains local to the file. EEG-only decisions do not define
+the synchronization offset; the saved segment manifest does.

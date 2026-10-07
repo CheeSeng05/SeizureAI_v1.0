@@ -2,6 +2,7 @@
 import math
 import json
 import tempfile
+from urllib.parse import quote
 from pathlib import Path
 import numpy as np
 from .storage.keys import safe_entity
@@ -42,7 +43,11 @@ def evidence_sources(settings, row, storage=None):
                 input_path(settings, row, matches[0])
             except ValueError:
                 continue
-            videos.append({**{key: segment.get(key) for key in ('segment_id', 'filename', 'global_start_sec', 'global_end_sec')}, 'input_index': paths.index(matches[0])})
+            pose_path = f"fusion/video_segments/{segment.get('segment_id')}/video_only/pose_keypoints.json"
+            pose = next((item for item in artifacts if item.get('relative_path') == pose_path), None)
+            videos.append({**{key: segment.get(key) for key in ('segment_id', 'filename', 'global_start_sec', 'global_end_sec')},
+                           'input_index': paths.index(matches[0]),
+                           'pose_url': f'/api/runs/{quote(row.id, safe="")}/artifacts/{quote(pose_path, safe="/")}' if pose else None})
     try:
         path = input_path(settings, row, data.get('eeg_file'))
         eeg = path.suffix.lower() in {'.e', '.edf'}

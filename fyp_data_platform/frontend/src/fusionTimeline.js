@@ -26,3 +26,20 @@ export function timelinePage(windows, page, range = {}, size = 10) {
   const current = Math.min(Math.max(0, page), pages - 1);
   return { rows: filtered.slice(current * size, (current + 1) * size), total: filtered.length, pages, current };
 }
+
+export function videoWindowInterval(window, segment) {
+  const start = Math.max(Number(window.start_sec), Number(segment.global_start_sec));
+  const end = Math.min(Number(window.end_sec), Number(segment.global_end_sec));
+  if (![start, end, Number(segment.global_start_sec)].every(Number.isFinite) || end <= start) return null;
+  return { start, end, localStart: start - Number(segment.global_start_sec), localEnd: end - Number(segment.global_start_sec) };
+}
+
+export function selectedWindowAtTime(window, selected, time) {
+  return window === selected && time != null && time >= window.start_sec && time < window.end_sec;
+}
+
+export function preciseTime(seconds) {
+  if (!Number.isFinite(seconds)) return '—';
+  const ticks = Math.round(Math.max(0, seconds) * 100);
+  return `${Math.floor(ticks / 6000)}:${String(Math.floor(ticks / 100) % 60).padStart(2, '0')}.${String(ticks % 100).padStart(2, '0')}`;
+}

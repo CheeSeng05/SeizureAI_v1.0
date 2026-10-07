@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Card, Empty, formatTime, percent } from './components';
 import FusionEvidence from './FusionEvidence';
-import { pickerSeconds, timelinePage } from './fusionTimeline';
+import { pickerSeconds, timelinePage, selectedWindowAtTime } from './fusionTimeline';
 
 const probability = value => value == null ? '—' : Number(value).toFixed(4);
 export default function FusionTimeline({ windows, runId }) {
@@ -38,9 +38,9 @@ export default function FusionTimeline({ windows, runId }) {
       {!result.total ? <Empty title={windows.length ? 'No windows match these filters' : 'Timeline unavailable'}>{windows.length ? 'Change the decision or time range, or clear the filters.' : 'The pipeline did not save fusion windows.'}</Empty> : <div className="timeline-table-scroll"><table className="timeline-table">
         <thead><tr><th>Window</th><th>Duration</th><th>EEG probability</th><th>Video probability</th><th>Fusion probability</th><th>Video coverage</th><th>Decision</th></tr></thead>
         <tbody>{result.rows.map((window, index) => {
-          const playing = playhead != null && playhead >= window.start_sec && playhead < window.end_sec;
+          const playing = selectedWindowAtTime(window, active, playhead);
           return <tr key={window.window_id || `${window.start_sec}-${index}`} className={`${active === window ? 'selected-window' : ''} ${playing ? 'playing-window' : ''}`}>
-            <td><button type="button" className="button" aria-pressed={active === window} onClick={() => { setSelected(window); setPlayhead(null); }}>{formatTime(window.start_sec)}–{formatTime(window.end_sec)}</button>{playing && <small> Playing</small>}</td>
+            <td><button type="button" className="button" aria-pressed={active === window} onClick={() => { setSelected(window); setPlayhead(null); }}>{formatTime(window.start_sec)}–{formatTime(window.end_sec)}</button>{playing && <small> Selected playback window</small>}</td>
             <td>{(window.end_sec-window.start_sec).toFixed(2)} s</td>
             <td>{probability(window.eeg_probability)}</td><td>{probability(window.video_probability)}</td><td>{probability(window.fused_probability)}</td><td>{percent(window.video_coverage)}</td>
             <td>{window.fusion_available ? Number(window.fused_prediction) === 1 ? 'Possible seizure' : 'No detection' : 'EEG only'}</td>
