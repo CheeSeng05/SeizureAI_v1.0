@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from datetime import datetime, timezone
 import mimetypes
 import tempfile
@@ -175,6 +176,7 @@ def _validate_multimodal_uploads(
     eeg_upload: FileStorage,
     videos: list[FileStorage],
     recording_id: str,
+    video_start_offsets: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Stage one upload set and verify its Nicolet-to-video synchronization."""
 
@@ -201,6 +203,7 @@ def _validate_multimodal_uploads(
                 eeg_path=eeg_path,
                 video_paths=video_paths,
                 recording_id=recording_id,
+                **({"video_start_offsets": video_start_offsets, "eeg_duration_sec": validation["duration_sec"]} if eeg_path.suffix.lower() == ".edf" else {}),
             )
             public = [item.public_dict() for item in segments]
             by_filename = {
@@ -301,6 +304,12 @@ def _validate_label_upload(
             if not recording_id or not records:
                 raise ValueError("Label CSV contains multiple recordings. Enter a Recording ID matching the CSV.")
         selected_recording = str(records[0].get('recording_id') or '').strip() or None
+        ordered = sorted(records, key=lambda row: row["start_sec"])
+        for index, row in enumerate(ordered):
+            if not all(math.isfinite(row[key]) for key in ("start_sec", "end_sec")) or row["start_sec"] < 0:
+                raise ValueError("Label intervals must have finite, non-negative times.")
+            if index and row["start_sec"] < ordered[index - 1]["end_sec"]:
+                raise ValueError("Ground-truth label intervals must not overlap.")
         seizure_rows = [record for record in records if int(record["label"]) == 1]
         return {
             "patient_id": patient_id,
@@ -313,6 +322,7 @@ def _validate_label_upload(
             "eeg_onset_sec": min((record["start_sec"] for record in seizure_rows), default=None),
             "clinical_onset_sec": min((record["start_sec"] for record in seizure_rows), default=None),
             "seizure_end_sec": max((record["end_sec"] for record in seizure_rows), default=None),
+            "label_end_sec": max(record["end_sec"] for record in records),
         }
     matches = [
         record for record in records
@@ -985,25 +995,30 @@ def create_app(config_path: str | None = None) -> Any:
             fusion_file_metadata: dict[str, dict[str, Any]] = {}
             recording_metadata: dict[str, Any] = {}
             if mode == "fusion" and eeg_upload:
+                offsets = None
+                if Path(eeg_upload.filename or "").suffix.lower() == ".edf":
+                    offsets = json.loads(request.form.get("video_start_offsets", "{}"))
+                    if not isinstance(offsets, dict):
+                        raise ValueError("Video start offsets must map filenames to seconds.")
+                    offsets = {secure_filename(name): float(value) for name, value in offsets.items()}
                 fusion_validation, fusion_segments, fusion_file_metadata = _validate_multimodal_uploads(
                     eeg_upload=eeg_upload,
                     videos=files,
                     recording_id=safe_entity(recording_id),
+                    **({"video_start_offsets": offsets} if offsets is not None else {}),
                 )
                 recording_metadata = {
                     "recording_type": "multimodal",
                     "sync_status": "verified",
                     "sync_verified": True,
-                    "sync_source": "nicolet_videosyncguid+video_container_duration",
+                    "sync_source": fusion_segments[0]["sync_source"],
                     "video_segments": fusion_segments,
                 }
             label_identity = None
             if label_upload and label_upload.filename:
                 if mode == "eeg":
                     raise ValueError("The video label workbook cannot be attached to an EEG-only upload.")
-                if mode == "fusion":
-                    raise ValueError("Ground-truth video labels are not attached during multimodal registration.")
-                if len(files) != 1:
+                if mode != "fusion" and len(files) != 1:
                     raise ValueError("Upload exactly one video when attaching a label workbook.")
                 label_identity = _validate_label_upload(
                     label_upload,
@@ -1012,6 +1027,13 @@ def create_app(config_path: str | None = None) -> Any:
                     seizure_id=str(request.form.get("seizure_id", "")).strip(),
                     seizure_type=str(request.form.get("seizure_type", "")).strip(),
                 )
+                if mode == "fusion":
+                    selector = label_identity.get("recording_id")
+                    if selector and str(selector).casefold() != recording_id.casefold():
+                        raise ValueError("Ground-truth Recording ID must match the multimodal recording.")
+                    times = [label_identity.get(key) for key in ("label_end_sec", "eeg_onset_sec", "clinical_onset_sec", "seizure_end_sec")]
+                    if any(value is not None and (not math.isfinite(value) or value < 0 or value > fusion_validation["duration_sec"]) for value in times):
+                        raise ValueError("Ground-truth times must be within the EEG recording duration.")
             uploaded_videos = [
                 _register_video(
                     settings=settings, storage=storage, session_factory=session_factory, upload=item,

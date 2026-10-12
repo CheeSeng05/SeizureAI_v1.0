@@ -23,7 +23,7 @@ from .synchronization.video_segments import (
     fuse_prediction_timelines,
     video_rows_on_global_timeline,
 )
-from .video.raw_pipeline import predict_video_file
+from .video.raw_pipeline import predict_video_file, load_video_annotation, reference_label_for_interval
 
 
 SIMULATED_WARNING = """============================================================
@@ -665,11 +665,12 @@ def run_video_segments_workflow(root: Path, config: Mapping[str, Any]) -> Workfl
         recording_id = str(data.get("recording_id") or "multimodal-recording")
         manifest = build_video_segment_manifest(
             eeg_path=Path(str(eeg_value)), video_paths=video_paths, recording_id=recording_id,
+            **({"video_start_offsets": data.get("video_start_offsets")} if Path(str(eeg_value)).suffix.lower() == ".edf" else {}),
         )
         _write_json(output / "video_segment_manifest.json", {
             "recording_id": recording_id,
             "sync_verified": True,
-            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "sync_source": manifest[0].sync_source,
             "segments": [item.public_dict() for item in manifest],
         })
         global_rows: list[dict[str, Any]] = []
@@ -689,7 +690,7 @@ def run_video_segments_workflow(root: Path, config: Mapping[str, Any]) -> Workfl
                 recording_id=recording_id,
                 start_sec=segment.global_start_sec,
                 end_sec=segment.global_end_sec,
-                pairing_note="Verified by Nicolet VIDEOSYNCGUID metadata.",
+                pairing_note=f"Synchronization source: {manifest[0].sync_source}",
             )
             result = run_video_workflow(root, segment_config, source)
             if result.status != "completed":
@@ -713,7 +714,7 @@ def run_video_segments_workflow(root: Path, config: Mapping[str, Any]) -> Workfl
             "probability_max": float(values.max()) if len(values) else None,
             "duration_sec": max(item.global_end_sec for item in manifest),
             "sync_verified": True,
-            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "sync_source": manifest[0].sync_source,
             "training_performed": False,
             "fusion_used": False,
         }
@@ -774,11 +775,12 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
             eeg_path=Path(str(eeg_value)),
             video_paths=video_paths,
             recording_id=recording_id,
+            **({"video_start_offsets": data.get("video_start_offsets")} if Path(str(eeg_value)).suffix.lower() == ".edf" else {}),
         )
         _write_json(output / "video_segment_manifest.json", {
             "recording_id": recording_id,
             "sync_verified": True,
-            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "sync_source": manifest[0].sync_source,
             "segments": [item.public_dict() for item in manifest],
         })
 
@@ -789,7 +791,7 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
             is_verified_pair=True,
             eeg_path=str(eeg_value),
             recording_id=recording_id,
-            pairing_note="Verified by Nicolet VIDEOSYNCGUID metadata.",
+            pairing_note=f"Synchronization source: {manifest[0].sync_source}",
         )
         eeg = run_eeg_workflow(root, config, eeg_source)
         if eeg.status != "completed":
@@ -798,6 +800,9 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
         global_video_rows: list[dict[str, Any]] = []
         for segment in manifest:
             segment_config = copy.deepcopy(dict(config))
+            # Recording-clock ground truth is evaluated after mapping, never
+            # against the segment's local video clock.
+            segment_config.setdefault("data", {})["video_labels"] = None
             segment_config.setdefault("testing", {})["output_directory"] = str(
                 output / "video_segments" / segment.segment_id
             )
@@ -811,7 +816,7 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
                 recording_id=recording_id,
                 start_sec=segment.global_start_sec,
                 end_sec=segment.global_end_sec,
-                pairing_note="Verified by Nicolet VIDEOSYNCGUID metadata.",
+                pairing_note=f"Synchronization source: {manifest[0].sync_source}",
             )
             video = run_video_workflow(root, segment_config, segment_source)
             if video.status != "completed":
@@ -839,6 +844,26 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
             "fusion_available", "video_coverage", "video_segment_ids", "video_window_ids",
             "eeg_weight", "video_weight", "fusion_threshold",
         ]
+        if data.get("video_labels"):
+            from .eeg.loaders import load_eeg
+            with load_eeg(eeg_value) as recording:
+                duration = recording.metadata.duration_sec
+            identity = data.get("label_identity", {})
+            annotation = load_video_annotation(
+                data["video_labels"], duration,
+                patient_id=identity.get("patient_id"), seizure_id=identity.get("seizure_id"),
+                seizure_type=identity.get("seizure_type"), recording_id=identity.get("recording_id"),
+            )
+            if annotation.alignment_status not in {"aligned_to_video_time", "onsets_aligned_but_offset_missing"}:
+                raise ValueError(f"Ground-truth labels cannot be aligned: {annotation.alignment_status}")
+            for row in fused_rows:
+                row.update({
+                    "reference_label": reference_label_for_interval(annotation, row["start_sec"], row["end_sec"]),
+                    "eeg_onset_sec": annotation.eeg_onset_sec,
+                    "clinical_onset_sec": annotation.clinical_onset_sec,
+                    "seizure_end_sec": annotation.seizure_end_sec,
+                })
+            fusion_fields.extend(["reference_label", "eeg_onset_sec", "clinical_onset_sec", "seizure_end_sec"])
         _write_csv(output / "predictions.csv", fused_rows, fusion_fields)
         available = [row for row in fused_rows if row["fusion_available"]]
         if not available:
@@ -851,7 +876,7 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
             "prediction_only": True,
             "fusion_method": "weighted_late_fusion",
             "sync_verified": True,
-            "sync_source": "nicolet_videosyncguid+video_container_duration",
+            "sync_source": manifest[0].sync_source,
             "eeg_weight": float(available[0]["eeg_weight"]),
             "video_weight": float(available[0]["video_weight"]),
             "fusion_threshold": threshold,
@@ -871,6 +896,25 @@ def run_fusion_workflow(root: Path, config: Mapping[str, Any]) -> WorkflowResult
             "training_performed": False,
             "feature_fusion_used": False,
         }
+        if data.get("video_labels"):
+            labelled = [row for row in available if row.get("reference_label") in (0, 1)]
+            metrics.update({
+                "prediction_only": not bool(labelled),
+                "evaluated_windows": len(labelled),
+                "excluded_windows": len(fused_rows) - len(labelled),
+                "label_policy": "majority_overlap" if annotation.intervals else "clinical_onset_interval",
+            })
+            if labelled:
+                metrics.update(binary_classification_metrics(
+                    [row["reference_label"] for row in labelled],
+                    [row["fused_probability"] for row in labelled], threshold=threshold,
+                ))
+                metrics.update({
+                    "true_positives": metrics["tp"], "true_negatives": metrics["tn"],
+                    "false_positives": metrics["fp"], "false_negatives": metrics["fn"],
+                    "labelled_seizure_windows": sum(row["reference_label"] for row in labelled),
+                    "labelled_non_seizure_windows": sum(1 - row["reference_label"] for row in labelled),
+                })
         completed_metadata = {
             **metadata,
             "video_model_used": True,

@@ -13,7 +13,6 @@ export default function Dashboard() {
   const latest = catalog.data.runs[0];
   return <div className="page">
     <div className="page-title"><div><p>Overview</p><h1>Research workspace</h1><span>Your stored recordings and authoritative model runs.</span></div><Link className="button primary" to="/upload">Upload recording <ArrowRight size={16} /></Link></div>
-    <Notice title="Pipeline-backed results"><p>The dashboard displays artifacts saved by FYPModels. It does not recalculate model metrics in the browser.</p></Notice>
     <div className="stats-grid">
       <Stat label="Registered recordings" value={counts.recordings} detail="PostgreSQL catalog" />
       <Stat label="Stored files" value={counts.files} detail="MinIO object storage" />

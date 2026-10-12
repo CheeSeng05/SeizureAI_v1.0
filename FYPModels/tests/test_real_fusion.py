@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import nullcontext
 import struct
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -193,8 +194,9 @@ def test_missing_video_never_becomes_zero_probability() -> None:
     assert row["fusion_available"] is False
 
 
+@pytest.mark.parametrize("labelled", [False, True])
 def test_real_fusion_workflow_runs_both_frozen_models_and_saves_traceable_rows(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, labelled,
 ) -> None:
     eeg_path = tmp_path / "recording.e"
     video_a = tmp_path / "a.avi"
@@ -241,6 +243,13 @@ def test_real_fusion_workflow_runs_both_frozen_models_and_saves_traceable_rows(
                    "minimum_video_coverage": 1.0},
     }
 
+    if labelled:
+        labels = tmp_path / "labels.csv"
+        labels.write_text("start_sec,end_sec,label\n0,4,1\n", encoding="utf-8")
+        config["data"]["video_labels"] = str(labels)
+        monkeypatch.setattr("seizure_multimodal.eeg.loaders.load_eeg", lambda _: nullcontext(
+            SimpleNamespace(metadata=SimpleNamespace(duration_sec=8.0))
+        ))
     result = run_fusion_workflow(tmp_path, config)
 
     assert result.status == "completed"
@@ -248,10 +257,41 @@ def test_real_fusion_workflow_runs_both_frozen_models_and_saves_traceable_rows(
     assert result.rows[0]["video_probability"] == pytest.approx(0.5)
     assert result.rows[0]["fused_probability"] == pytest.approx(0.82)
     assert result.metrics["feature_fusion_used"] is False
+    assert result.metrics["prediction_only"] is (not labelled)
+    if labelled:
+        assert result.rows[0]["reference_label"] == 1
+        assert result.metrics["true_positives"] == 1
+        assert result.metrics["accuracy"] == 1
     with (output / "fusion" / "predictions.csv").open(encoding="utf-8", newline="") as stream:
         saved = next(csv.DictReader(stream))
     assert saved["recording_id"] == "recording"
     assert saved["video_window_ids"] == "segment-0001-window|segment-0002-window"
+
+
+@pytest.mark.parametrize("offsets,match", [
+    ({}, "requires a start time"),
+    ({"video.avi": -1}, "Invalid EDF"),
+    ({"video.avi": float('nan')}, "Invalid EDF"),
+    ({"video.avi": 9}, "extends beyond"),
+])
+def test_edf_manifest_rejects_invalid_timing(tmp_path, offsets, match):
+    with pytest.raises(ValueError, match=match):
+        build_video_segment_manifest(
+            eeg_path=tmp_path / "recording.edf", video_paths=[tmp_path / "video.avi"],
+            recording_id="edf", video_start_offsets=offsets, eeg_duration_sec=10,
+            video_inspector=lambda _: SimpleNamespace(duration_sec=4, fps=25),
+        )
+
+
+def test_edf_manifest_preserves_human_declared_offset(tmp_path):
+    segments = build_video_segment_manifest(
+        eeg_path=tmp_path / "recording.edf", video_paths=[tmp_path / "video.avi"],
+        recording_id="edf", video_start_offsets={"video.avi": 2.5}, eeg_duration_sec=10,
+        video_inspector=lambda _: SimpleNamespace(duration_sec=4, fps=25),
+    )
+    assert segments[0].global_start_sec == 2.5
+    assert segments[0].global_end_sec == 6.5
+    assert segments[0].sync_source == "human_declared_offsets+video_container_duration"
 
 
 def test_video_only_workflow_processes_every_multimodal_segment(tmp_path: Path, monkeypatch) -> None:

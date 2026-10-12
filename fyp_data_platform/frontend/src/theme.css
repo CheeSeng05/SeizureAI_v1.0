@@ -24,8 +24,10 @@
 .compare-run-grid fieldset { display: flex; flex-direction: column; gap: 15px; margin: 0; padding: 16px; border: 1px solid #dbe2ea; border-radius: 10px; }
 .compare-run-grid legend { padding: 0 7px; color: #263244; font-size: 13px; font-weight: 700; }
 .compare-run-grid label { display: flex; flex-direction: column; gap: 7px; color: #64748b; font-size: 11px; font-weight: 650; }
-.compare-run-grid select, .compare-run-grid input[type="number"] { height: 40px; padding: 0 9px; border: 1px solid #dbe2ea; border-radius: 8px; color: #334155; background: #fff; }
-.compare-threshold { display: grid; grid-template-columns: 1fr 78px; align-items: center; gap: 10px; }.compare-threshold input[type="range"] { width: 100%; accent-color: #2563eb; }
+.compare-run-grid select { width: 100%; min-width: 0; height: 40px; padding: 0 9px; border: 1px solid #dbe2ea; border-radius: 8px; color: #334155; background: #fff; }
+.compare-run-grid fieldset { min-width: 0; }
+.run-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media(max-width:760px) { .run-summary-grid { grid-template-columns: 1fr; } }
 .comparison-note { margin: 13px 0 0; color: #64748b; font-size: 10px; }
 .difference-table > div { grid-template-columns: minmax(150px, 1.2fr) 1fr 1fr 1fr; }
 .difference-table em { width: fit-content; min-width: 65px; padding: 5px 8px; border-radius: 7px; font-style: normal; font-weight: 750; text-align: center; }

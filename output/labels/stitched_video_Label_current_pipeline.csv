@@ -1,2 +1,0 @@
-PatID,#Seizure,Seizure Type,EEG onset,Clinical Onset,Offset seconds,Notes
-local-patient-001,SzSynthetic1,SYN,10.2,10.2,56.1,Current parser supports exactly one selected seizure row; this spans first seizure onset to final seizure offset.

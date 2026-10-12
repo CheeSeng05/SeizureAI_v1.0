@@ -162,9 +162,39 @@ def build_video_segment_manifest(
     recording_id: str,
     video_inspector: Callable[[str | Path], Any] = inspect_video,
     event_tolerance_sec: float = 0.25,
+    video_start_offsets: Mapping[str, float] | None = None,
+    eeg_duration_sec: float | None = None,
 ) -> list[VideoSegment]:
     if not video_paths:
         raise ValueError("At least one video segment is required for multimodal fusion.")
+    if Path(eeg_path).suffix.casefold() == ".edf":
+        offsets = dict(video_start_offsets or {})
+        names = [Path(value).name for value in video_paths]
+        if len({name.casefold() for name in names}) != len(names):
+            raise ValueError("Duplicate video segment filename.")
+        if set(offsets) != set(names):
+            raise ValueError("EDF synchronization requires a start time in EEG seconds for every video segment.")
+        if eeg_duration_sec is None:
+            from ..eeg.loaders import load_eeg
+            with load_eeg(eeg_path) as recording:
+                eeg_duration_sec = recording.metadata.duration_sec
+        segments = []
+        for index, value in enumerate(video_paths, start=1):
+            path = Path(value).resolve()
+            start = float(offsets[path.name])
+            inspected = video_inspector(path)
+            duration, fps = float(inspected.duration_sec), float(inspected.fps)
+            if not all(np.isfinite(item) for item in (start, duration, fps, eeg_duration_sec)) or start < 0 or duration <= 0 or fps <= 0:
+                raise ValueError(f"Invalid EDF synchronization timing for {path.name}.")
+            if start + duration > eeg_duration_sec + event_tolerance_sec:
+                raise ValueError(f"Video segment extends beyond the EEG recording: {path.name}")
+            segments.append(VideoSegment(
+                segment_id=f"segment-{index:04d}", video_path=str(path), filename=path.name,
+                global_start_sec=start, global_end_sec=start + duration,
+                duration_sec=duration, fps=fps,
+                sync_source="human_declared_offsets+video_container_duration",
+            ))
+        return sorted(segments, key=lambda item: (item.global_start_sec, item.segment_id))
     if Path(eeg_path).suffix.casefold() != ".e":
         raise ValueError("Automatic multimodal synchronization currently requires a Nicolet .e recording.")
     records, raw_header = read_nicolet_video_sync(eeg_path)

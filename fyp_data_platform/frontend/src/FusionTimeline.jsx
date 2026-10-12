@@ -36,13 +36,14 @@ export default function FusionTimeline({ windows, runId }) {
     {error && <p role="alert">{error}</p>}
     <div>
       {!result.total ? <Empty title={windows.length ? 'No windows match these filters' : 'Timeline unavailable'}>{windows.length ? 'Change the decision or time range, or clear the filters.' : 'The pipeline did not save fusion windows.'}</Empty> : <div className="timeline-table-scroll"><table className="timeline-table">
-        <thead><tr><th>Window</th><th>Duration</th><th>EEG probability</th><th>Video probability</th><th>Fusion probability</th><th>Video coverage</th><th>Decision</th></tr></thead>
+        <thead><tr><th>Window</th><th>Duration</th><th>EEG probability</th><th>Video probability</th><th>Fusion probability</th><th>Video coverage</th><th>Ground truth</th><th>Decision</th></tr></thead>
         <tbody>{result.rows.map((window, index) => {
           const playing = selectedWindowAtTime(window, active, playhead);
           return <tr key={window.window_id || `${window.start_sec}-${index}`} className={`${active === window ? 'selected-window' : ''} ${playing ? 'playing-window' : ''}`}>
             <td><button type="button" className="button" aria-pressed={active === window} onClick={() => { setSelected(window); setPlayhead(null); }}>{formatTime(window.start_sec)}–{formatTime(window.end_sec)}</button>{playing && <small> Selected playback window</small>}</td>
             <td>{(window.end_sec-window.start_sec).toFixed(2)} s</td>
             <td>{probability(window.eeg_probability)}</td><td>{probability(window.video_probability)}</td><td>{probability(window.fused_probability)}</td><td>{percent(window.video_coverage)}</td>
+            <td>{window.reference_label === 1 ? 'Seizure' : window.reference_label === 0 ? 'Non-seizure' : 'Unlabelled'}</td>
             <td>{window.fusion_available ? Number(window.fused_prediction) === 1 ? 'Possible seizure' : 'No detection' : 'EEG only'}</td>
           </tr>;
         })}</tbody>

@@ -248,3 +248,9 @@ __marimo__/
 /beed_+bangalore+eeg+epilepsy+dataset.zip
 /eeg+eye+state.zip
 /Seizure videos of epilepsy patients
+
+# Local dependencies, scratch files, and generated artifacts
+node_modules/
+/tmp/
+/output/
+/FYPModels/.test-temp*/

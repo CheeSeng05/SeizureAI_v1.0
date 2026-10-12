@@ -356,6 +356,53 @@ def test_fusion_run_rejects_unverified_video_eeg_pair(settings, migrated_db, mon
     )
 
 
+@pytest.mark.parametrize("labels,error", [
+    (b"start_sec,end_sec,label\n0,4,0\n4,8,1\n", None),
+    (b"start_sec,end_sec,label\n0,9,1\n", "within the EEG"),
+    (b"start_sec,end_sec,label\n0,5,0\n4,8,1\n", "must not overlap"),
+])
+def test_edf_fusion_upload_and_labels(settings, migrated_db, monkeypatch, labels, error):
+    engine, factory = migrated_db
+    storage = LocalStorage(settings.local_storage_root)
+    monkeypatch.setattr(ui, "load_settings", lambda _: settings)
+    monkeypatch.setattr(ui, "create_engine_and_session", lambda _: (engine, factory))
+    monkeypatch.setattr(ui, "create_storage", lambda _: storage)
+    monkeypatch.setattr("seizure_multimodal.eeg.loaders.load_eeg", lambda _: nullcontext(
+        SimpleNamespace(metadata=SimpleNamespace(
+            source_format="edf", duration_sec=8, channel_names=("Fp1", "F7"),
+            sampling_rates=(256, 256),
+        ), annotations=())
+    ))
+    original_builder = ui.build_video_segment_manifest
+    monkeypatch.setattr(ui, "build_video_segment_manifest", lambda **kwargs: original_builder(
+        **kwargs, video_inspector=lambda _: SimpleNamespace(duration_sec=4, fps=25)
+    ))
+    client = ui.create_app().test_client()
+    response = client.post("/api/uploads", data={
+        "mode": "fusion", "dataset_id": "edf-data", "recording_id": "edf-001",
+        "patient_id": "Pat01", "video_start_offsets": '{"video.mp4": 2}',
+        "videos": (BytesIO(b"video"), "video.mp4"),
+        "eeg": (BytesIO(b"edf"), "recording.edf"),
+        "labels": (BytesIO(labels), "human_annotations.csv"),
+    }, content_type="multipart/form-data")
+    if error:
+        assert response.status_code == 400
+        assert error in response.get_json()["error"]
+        assert client.get("/api/catalog").get_json()["recordings"] == []
+        return
+    assert response.status_code == 201, response.get_json()
+    recording = client.get("/api/catalog").get_json()["recordings"][0]
+    assert recording["sync_source"] == "human_declared_offsets+video_container_duration"
+    assert recording["label"]["identity"]["interval_count"] == 2
+    integration = ui.SeizureModelIntegration(settings, storage, factory)
+    config = integration._build_config(
+        settings.model_project_path, settings.work_root,
+        {"eeg": settings.work_root / "eeg.edf"},
+        recording_id="edf-001", dataset_id="edf-data",
+    )
+    assert config["data"]["video_start_offsets"] == {"video.mp4": 2}
+
+
 def test_run_rejects_unknown_mode(settings, migrated_db, monkeypatch) -> None:
     engine, factory = migrated_db
     monkeypatch.setattr(ui, "load_settings", lambda _: settings)

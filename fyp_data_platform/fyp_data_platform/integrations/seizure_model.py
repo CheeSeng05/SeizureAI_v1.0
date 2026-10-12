@@ -105,6 +105,8 @@ class SeizureModelIntegration:
             required = {"eeg"}
         elif mode in {"fusion", "strict_multimodal"}:
             required = {"video", "eeg"}
+            if require_labels:
+                required.add("labels")
         else:
             required = {"video", "labels", "eeg"} if require_labels else set()
         missing = sorted(name for name in required if not resolved[name])
@@ -185,6 +187,7 @@ class SeizureModelIntegration:
             label_identity=label_identity,
             video_paths=staged_videos,
             recording_id=recording_id,
+            dataset_id=dataset_id,
         )
         progress_path = run_root / "progress.json"
         config.setdefault("testing", {})["progress_file"] = str(progress_path.resolve())
@@ -333,6 +336,7 @@ class SeizureModelIntegration:
         *, label_identity: dict[str, Any] | None = None,
         video_paths: list[Path] | None = None,
         recording_id: str | None = None,
+        dataset_id: str | None = None,
     ) -> dict[str, Any]:
         config = yaml.safe_load((project / "configs" / "inference.yaml").read_text(encoding="utf-8"))
         config["training"] = {"enabled": False}
@@ -342,7 +346,17 @@ class SeizureModelIntegration:
         data["video"] = str(staged.get("video", project / "__missing_video__"))
         data["video_segments"] = [str(path) for path in video_paths]
         data["recording_id"] = recording_id
+        if staged.get("eeg") and staged["eeg"].suffix.lower() == ".edf" and recording_id:
+            with self.session_factory() as session:
+                from fyp_data_platform.db.models import Recording
+                recording = session.get(Recording, f"{dataset_id}::{recording_id}") if dataset_id else None
+                if recording:
+                    data["video_start_offsets"] = {
+                        item["filename"]: item["global_start_sec"]
+                        for item in (recording.metadata_json or {}).get("video_segments", [])
+                    }
         data["video_labels"] = str(staged["labels"]) if "labels" in staged else None
+        data["label_identity"] = label_identity or {}
         eeg_path = staged.get("eeg")
         if eeg_path and eeg_path.suffix.lower() == ".csv":
             data["eeg_csv"] = str(eeg_path)
